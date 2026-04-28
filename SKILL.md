@@ -65,14 +65,26 @@ Press `?` for the full help modal grouped by category. Hotkeys only fire when th
 | | `o` | open worktree in Cursor |
 | | `i` | open nvim + Diffview iTerm tab |
 | Worktree lifecycle | `n` | new worktree (modal: branch / base / prompt) |
-| | `r` | kill agent (and remove worktree if attached) — y/N confirm |
+| | `r` | remove the selected card (y/N confirm). **Worktree card** → kill agent + `wt remove <slug> --force` (worktree dir + branch deleted). **Primary card** → kill agent + drop card (no filesystem changes). |
 | | `s` | `wt sync` |
 | Agent control | `x` | pause / resume the selected agent (SIGSTOP / SIGCONT) |
 | Dashboard | `p` | pause / resume auto-refresh |
 | | `q` / `D` | detach tmux |
 | | `Q` | kill agent-monitor tmux session |
 | | `?` | help modal |
-| Pane switching | `F2` / `F3` / `M-Tab` | session-scoped — never leaks to other tmux sessions |
+| Pane switching | `F2` / `F3` | top / bottom pane (macOS: needs Fn+F2 or "F-keys as standard") |
+| | `C-Up` / `C-Down` | top / bottom pane (recommended fallback — works in every terminal) |
+| | `M-Tab` / `M-Shift-Tab` | cycle next / previous (needs iTerm: Option = Esc+; tmux key name is `M-BTab`) |
+| | `M-1` / `M-2` | top / bottom pane (needs iTerm: Option = Esc+) |
+| | `M-Up` / `M-Down` | top / bottom pane (needs iTerm: Option = Esc+) |
+| | `prefix F2` / `prefix F3` | top / bottom pane via tmux prefix (always works) |
+| | `prefix Tab` / `prefix BTab` | cycle next / previous via tmux prefix |
+
+All pane-switching bindings live in a session-scoped `agent-monitor-root` key table, so they never leak to other tmux sessions.
+
+### Card model
+
+Each worktree gets exactly one card (the most-recent agent for that worktree wins; older chats on the same worktree are hidden). Worktree cards are pinned — they always surface regardless of `AM_IDLE_THRESHOLD_MIN`, since the worktree itself is the unit of interest. Primary-checkout sessions surface as individual cards and age out at the idle threshold; `r` kills+drops them.
 
 ## State classification (the bug fix)
 

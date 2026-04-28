@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -31,8 +32,21 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	switch key {
-	case "ctrl+c", "Q":
-		// Q kills the tmux session if we're in one; ctrl+c just exits.
+	case "Q":
+		// Q must actually destroy the tmux session — otherwise the
+		// `am` supervisor loop immediately respawns the dashboard
+		// after tea.Quit and nothing visible happens. We kill the
+		// session first (which also kills the supervisor's bash),
+		// then quit the binary as a fallback for non-tmux invocations.
+		// Monitored cursor-agent worker-servers run in *other*
+		// processes and are untouched.
+		sess := os.Getenv("AM_TMUX_SESSION")
+		if sess == "" {
+			sess = "agent-monitor"
+		}
+		_ = exec.Command("tmux", "kill-session", "-t", sess).Run()
+		return m, tea.Quit
+	case "ctrl+c":
 		return m, tea.Quit
 	case "q", "D":
 		// Detach tmux, leave the dashboard running. We don't try to be
@@ -252,6 +266,14 @@ func (m *model) handleEnter() (tea.Model, tea.Cmd) {
 }
 
 // startRemove pops the y/N confirm bar for the `r` hotkey.
+//
+// Removal policy:
+//   - Worktree card: kill the agent AND `wt remove <slug> --force` (drops
+//     the worktree dir + branch). y/N confirm because the branch deletion
+//     is destructive — work in progress on that branch will be gone.
+//   - Primary card: kill the agent (SIGTERM, swallowed if already idle)
+//     and tombstone the card so it disappears on the next refresh. No
+//     filesystem changes — primary checkout stays.
 func (m *model) startRemove() (tea.Model, tea.Cmd) {
 	s := m.selectedSession()
 	if s == nil {
@@ -259,20 +281,30 @@ func (m *model) startRemove() (tea.Model, tea.Cmd) {
 	}
 	m.state = stateConfirmRemove
 	if s.WorktreeSlug != "" {
+		slug := s.WorktreeSlug
+		if primary := scanner.DecodeProjectPath(s.ProjectDir); primary != "" {
+			if real := scanner.SlugFromEncoded(primary, slug); real != "" {
+				slug = real
+			}
+		}
 		m.confirm = confirmBar{
-			title:    fmt.Sprintf("Kill agent %s and remove worktree '%s'? (branch deleted)", short(s.ID), s.WorktreeSlug),
+			title:    fmt.Sprintf("Kill agent %s and remove worktree '%s'? (branch will be deleted)", short(s.ID), slug),
 			subtitle: "y=yes   any other key=no",
 		}
-	} else {
-		m.confirm = confirmBar{
-			title:    fmt.Sprintf("Kill agent %s? (no worktree attached)", short(s.ID)),
-			subtitle: "y=yes   any other key=no",
-		}
+		return m, nil
+	}
+	m.confirm = confirmBar{
+		title:    fmt.Sprintf("Kill agent %s? (primary checkout — agent terminated, card dropped)", short(s.ID)),
+		subtitle: "y=yes   any other key=no",
 	}
 	return m, nil
 }
 
 // handleConfirmRemoveKey routes keys while the y/N confirm is up.
+//
+// Reachable for both card types (worktree and primary). Worktree cards
+// trigger an additional `wt remove --force` after the kill so the
+// worktree directory and branch are deleted alongside the agent.
 func (m *model) handleConfirmRemoveKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	m.state = stateList
@@ -286,24 +318,39 @@ func (m *model) handleConfirmRemoveKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	id := s.ID
-	slug := s.WorktreeSlug
+	hasWorktree := s.WorktreeSlug != ""
 	primary := scanner.DecodeProjectPath(s.ProjectDir)
-	hasWorktree := slug != ""
-	if hasWorktree {
+	slug := s.WorktreeSlug
+	if hasWorktree && primary != "" {
 		if real := scanner.SlugFromEncoded(primary, slug); real != "" {
 			slug = real
 		}
 	}
-	// If primary, tombstone so the card disappears next refresh.
-	if !hasWorktree {
-		m.tombstones[id] = struct{}{}
+
+	// Tombstone the chat id either way so the card disappears on the
+	// next refresh tick. For worktree cards `wt remove` will also drop
+	// the project dir on disk and the next refresh would naturally
+	// stop surfacing it, but the tombstone removes the visual lag
+	// between the keypress and the next scan.
+	m.tombstones[id] = struct{}{}
+
+	label := fmt.Sprintf("killed agent %s", short(id))
+	if hasWorktree {
+		label = fmt.Sprintf("removed worktree '%s' (agent %s killed)", slug, short(id))
 	}
 	return m, tea.Batch(
 		m.runWtCmd(
-			fmt.Sprintf("killed agent %s", short(id)),
+			label,
 			func() error {
+				// proctable.Kill returns an error if the chat had no
+				// live process to begin with (idle agent). That's the
+				// expected case for "remove an idle card" — swallow
+				// it so the worktree-removal path still runs.
 				_ = m.proc.Kill(id)
 				if hasWorktree {
+					if primary == "" {
+						return fmt.Errorf("could not infer primary repo for worktree '%s'", slug)
+					}
 					return m.wt.Remove(primary, slug, true)
 				}
 				return nil

@@ -93,6 +93,14 @@ func (s *Scanner) Scan() []session.Session {
 		if !pe.IsDir() {
 			continue
 		}
+		// Worktree-backed project dirs always surface, regardless of
+		// IdleThreshold — the dashboard's contract is "1 card per
+		// worktree, always", so an idle agent on a worktree must not
+		// drop off the list. Primary-checkout sessions still age out
+		// at the cutoff so the dashboard doesn't fill up with weeks
+		// of stale chats.
+		isWorktree := strings.Contains(pe.Name(), "__worktrees__") ||
+			strings.Contains(pe.Name(), "-worktrees-")
 		atRoot := filepath.Join(root, pe.Name(), "agent-transcripts")
 		ids, err := os.ReadDir(atRoot)
 		if err != nil {
@@ -109,7 +117,7 @@ func (s *Scanner) Scan() []session.Session {
 				continue
 			}
 			m := info.ModTime().Unix()
-			if m < cutoff {
+			if !isWorktree && m < cutoff {
 				continue
 			}
 			cands = append(cands, candidate{f, m})

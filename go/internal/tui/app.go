@@ -70,9 +70,10 @@ type model struct {
 	proc    *proctable.Table
 	wt      *wtbridge.Bridge
 
-	sessions []session.Session
-	selected int
-	paused   bool // dashboard auto-refresh paused (the `p` hotkey)
+	sessions     []session.Session
+	selected     int
+	scrollOffset int  // index of the topmost card rendered in the viewport
+	paused       bool // dashboard auto-refresh paused (the `p` hotkey)
 
 	state    uiState
 	confirm  confirmBar
@@ -159,12 +160,23 @@ func (m *model) scheduleTick() tea.Cmd {
 }
 
 // refreshCmd does an in-process scan + proctable refresh and returns the result.
+//
+// Card model:
+//   - Worktree-backed sessions collapse to one card per (encoded project dir).
+//     Cursor encodes the worktree path into the project dir, so two transcripts
+//     for the same worktree share the same ProjectDir; we keep only the
+//     most-recent one (scanner returns sessions sorted newest first, so the
+//     first one wins).
+//   - Primary-checkout sessions surface as individual cards — the user can
+//     run multiple agents against the main checkout and remove them
+//     independently with `r`.
 func (m *model) refreshCmd() tea.Cmd {
 	return func() tea.Msg {
 		m.proc.Refresh()
 		raw := m.scanner.Scan()
 		var wtmID string
 		filtered := raw[:0]
+		seenWorktree := map[string]bool{}
 		for _, s := range raw {
 			if _, ok := m.tombstones[s.ID]; ok {
 				continue
@@ -172,6 +184,12 @@ func (m *model) refreshCmd() tea.Cmd {
 			if m.proc.IsWtManager(s.ID) {
 				wtmID = s.ID
 				continue
+			}
+			if s.WorktreeSlug != "" {
+				if seenWorktree[s.ProjectDir] {
+					continue
+				}
+				seenWorktree[s.ProjectDir] = true
 			}
 			s.State = classifier.Classify(s, m.proc)
 			s.PID = m.proc.PID(s.ID)
@@ -204,6 +222,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.selected < 0 {
 			m.selected = 0
+		}
+		// Clamp the scroll offset too — sessions may have just been
+		// removed (tombstone, idle filter, dedup) so an offset that
+		// was valid last tick may now point past the end.
+		if m.scrollOffset > m.selected {
+			m.scrollOffset = m.selected
+		}
+		if m.scrollOffset < 0 {
+			m.scrollOffset = 0
 		}
 		return m, nil
 

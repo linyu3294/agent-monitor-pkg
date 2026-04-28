@@ -134,6 +134,36 @@ EOF
 # Other tmux sessions and the user's personal config stay untouched —
 # we use a private root-replacement key-table seeded with the default
 # mouse bindings.
+#
+# Why so many bindings: F-keys on macOS are owned by the OS by default
+# (brightness, mission-control, etc.), so F2/F3 only reach tmux when the
+# user has either pressed Fn+F2 or flipped "Use F1, F2, etc. keys as
+# standard function keys" in System Settings. We can't change the
+# user's keyboard pref from a script, so we ship a generous set of
+# alternatives that don't depend on F-keys.
+#
+# Tiers (any of these works to switch panes inside the agent-monitor
+# session — pick whichever your environment forwards cleanly):
+#
+#   F-keys (need macOS F-keys in standard mode):
+#     F2 → top pane (dashboard)
+#     F3 → bottom pane (wt-manager / follow / resume)
+#
+#   Option modifier (need iTerm: "Left Option = Esc+"):
+#     M-Tab  / M-BTab   → cycle next / previous
+#     M-1    / M-2      → top / bottom (Option-1 / Option-2)
+#     M-Up   / M-Down   → top / bottom (Option-arrows)
+#
+#   Ctrl + arrows (work in nearly every terminal — recommended fallback):
+#     C-Up   / C-Down   → top / bottom
+#
+#   With tmux prefix (always works regardless of terminal forwarding):
+#     prefix F2  / prefix F3
+#     prefix Tab / prefix BTab
+#     prefix Up  / prefix Down  (the tmux default — also still bound)
+#
+# `extended-keys on` ensures modifier-combined keys (Ctrl+Up etc.) reach
+# tmux unambiguously on terminals that support CSI u encoding (tmux 3.2+).
 install_session_keybindings() {
   local tbl="agent-monitor-root"
 
@@ -150,10 +180,33 @@ install_session_keybindings() {
     tmux source-file "$tmpf" 2>/dev/null || true
   fi
 
+  # F-keys (legacy / default, may be intercepted by macOS).
   tmux bind-key -T "$tbl" F2     select-pane -t :.0 2>/dev/null || true
   tmux bind-key -T "$tbl" F3     select-pane -t :.1 2>/dev/null || true
+
+  # Option-modifier (iTerm: Option = Esc+).
   tmux bind-key -T "$tbl" M-Tab  select-pane -t :.+ 2>/dev/null || true
   tmux bind-key -T "$tbl" M-BTab select-pane -t :.- 2>/dev/null || true
+  tmux bind-key -T "$tbl" M-1    select-pane -t :.0 2>/dev/null || true
+  tmux bind-key -T "$tbl" M-2    select-pane -t :.1 2>/dev/null || true
+  tmux bind-key -T "$tbl" M-Up   select-pane -t :.0 2>/dev/null || true
+  tmux bind-key -T "$tbl" M-Down select-pane -t :.1 2>/dev/null || true
+
+  # Ctrl + arrows — works in iTerm, Terminal.app, Alacritty, kitty, etc.
+  # without any user-side configuration. The most reliable fallback.
+  tmux bind-key -T "$tbl" C-Up   select-pane -t :.0 2>/dev/null || true
+  tmux bind-key -T "$tbl" C-Down select-pane -t :.1 2>/dev/null || true
+
+  # Prefix-prefixed escape hatches — work even when the terminal swallows
+  # all the unprefixed bindings above.
+  tmux bind-key -T prefix F2     select-pane -t :.0 2>/dev/null || true
+  tmux bind-key -T prefix F3     select-pane -t :.1 2>/dev/null || true
+  tmux bind-key -T prefix Tab    select-pane -t :.+ 2>/dev/null || true
+  tmux bind-key -T prefix BTab   select-pane -t :.- 2>/dev/null || true
+
+  # Make modifier-combined keys (C-Up, M-Up, etc.) survive transport
+  # through the terminal cleanly. No-op on tmux <3.2.
+  tmux set-option -t "$AM_TMUX_SESSION" extended-keys on >/dev/null 2>&1 || true
 
   tmux set-option -t "$AM_TMUX_SESSION" key-table "$tbl" >/dev/null 2>&1 || true
 }
@@ -174,6 +227,10 @@ attach_session() {
 cmd_open() {
   require_tmux
   if session_exists; then
+    # Re-install bindings on every attach so users who upgrade `am` or
+    # tweak their tmux config pick up the fresh key table without having
+    # to `am kill && am`.
+    install_session_keybindings
     attach_session
     return
   fi
@@ -284,6 +341,10 @@ cmd_restart() {
     exit 1
   }
   tmux respawn-pane -k -t "$AM_TMUX_SESSION:0.0" "bash -c '\"$AM_BINARY\"'"
+  # Refresh the key bindings too — `am restart` is the canonical "I just
+  # upgraded the launcher" command, and users expect new bindings to
+  # land without a full `am kill && am` cycle.
+  install_session_keybindings
   echo "agent-monitor: restarted dashboard pane (wt-manager pane unchanged)"
 }
 
