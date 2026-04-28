@@ -1,0 +1,66 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    strategy:
+      matrix:
+        arch: [arm64, amd64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: go/go.sum
+
+      - name: Build agent-monitor for darwin/${{ matrix.arch }}
+        working-directory: go
+        env:
+          GOOS: darwin
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p ../bin
+          go build \
+            -trimpath \
+            -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+            -o "../bin/agent-monitor-darwin-${GOARCH}" \
+            ./cmd/agent-monitor
+          shasum -a 256 "../bin/agent-monitor-darwin-${GOARCH}" > "../bin/agent-monitor-darwin-${GOARCH}.sha256"
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-monitor-darwin-${{ matrix.arch }}
+          path: |
+            bin/agent-monitor-darwin-${{ matrix.arch }}
+            bin/agent-monitor-darwin-${{ matrix.arch }}.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release
+          find dist -type f \( -name 'agent-monitor-*' \) -exec cp {} release/ \;
+          ls -la release/
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true

@@ -1,0 +1,361 @@
+#!/usr/bin/env bash
+# am — agent-monitor launcher.
+#
+# Owns the tmux session lifecycle, the close-and-continue workflow, and
+# the Go-binary build/update commands. The dashboard itself lives in
+# the Go binary at $AM_HOME/bin/agent-monitor; this script just
+# orchestrates the tmux panes around it and forwards `list`, `follow`,
+# and `resume` calls.
+
+set -euo pipefail
+
+# --- self-locating ---
+# Resolve the real directory of this script even when invoked via
+# symlink (e.g. `~/.local/bin/am` → `$AM_HOME/am`). This is the only
+# reason the launcher works after `install.sh` symlinks it onto $PATH.
+_self="$0"
+while [[ -L "$_self" ]]; do
+  _link="$(readlink "$_self")"
+  if [[ "$_link" = /* ]]; then
+    _self="$_link"
+  else
+    _self="$(cd "$(dirname "$_self")" && pwd)/$_link"
+  fi
+done
+AM_HOME="$(cd "$(dirname "$_self")" && pwd)"
+export AM_HOME
+
+AM_LIB="$AM_HOME/lib"
+AM_BIN_DIR="$AM_HOME/bin"
+AM_AGENT_PROMPT="$AM_LIB/agent-prompt.md"
+AM_FOLLOW="$AM_LIB/follow.sh"
+
+# Detect arch so we can pick (or build) the right binary. Releases ship
+# darwin-arm64 and darwin-amd64 today; install.sh downloads whichever
+# matches the host.
+_os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+_arch="$(uname -m)"
+case "$_arch" in
+  x86_64) _arch="amd64" ;;
+  aarch64) _arch="arm64" ;;
+esac
+AM_BINARY_NAME="agent-monitor-${_os}-${_arch}"
+AM_BINARY="$AM_BIN_DIR/$AM_BINARY_NAME"
+# Back-compat: if a generic `agent-monitor` exists (e.g. from a local
+# `go build`), prefer it. install.sh always writes the arch-specific
+# name, so this only fires for dev builds.
+if [[ -x "$AM_BIN_DIR/agent-monitor" ]] && [[ ! -x "$AM_BINARY" ]]; then
+  AM_BINARY="$AM_BIN_DIR/agent-monitor"
+fi
+
+# Defaults users may override in their shell env.
+export AM_TMUX_SESSION="${AM_TMUX_SESSION:-agent-monitor}"
+export AM_REFRESH_MS="${AM_REFRESH_MS:-2000}"
+export AM_IDLE_THRESHOLD_MIN="${AM_IDLE_THRESHOLD_MIN:-20}"
+export AM_MAX_CARDS="${AM_MAX_CARDS:-50}"
+
+require_tmux() {
+  command -v tmux >/dev/null 2>&1 || {
+    echo "agent-monitor: tmux is required but not installed (brew install tmux)" >&2
+    exit 1
+  }
+}
+
+require_binary() {
+  if [[ ! -x "$AM_BINARY" ]]; then
+    cat >&2 <<EOF
+agent-monitor: dashboard binary not found at $AM_BINARY
+
+If Go is installed, build it now:
+  am rebuild
+
+Otherwise re-run install.sh to fetch the prebuilt binary:
+  $AM_HOME/install.sh
+EOF
+    exit 1
+  fi
+}
+
+session_exists() {
+  tmux has-session -t "$AM_TMUX_SESSION" 2>/dev/null
+}
+
+build_session() {
+  require_tmux
+  require_binary
+  local bottom_cmd="$1"
+
+  # Disable pane scrollback for this session so scrolling up doesn't
+  # reveal every previous repaint. We flip the global setting, create
+  # the session (panes inherit 0), then restore the global value.
+  local prev_history_limit
+  prev_history_limit="$(tmux show-option -gv history-limit 2>/dev/null || echo 2000)"
+  tmux set-option -g history-limit 0 >/dev/null 2>&1 || true
+
+  # Wrap the dashboard in a self-restarting supervisor loop so a single
+  # crash doesn't leave a "Pane is dead" corpse. Crash-loop protection:
+  # if the binary exits 3 times in <2 s, stop respawning so the user can
+  # see the error.
+  local supervisor
+  supervisor=$(cat <<EOF
+set -u
+count=0; window_start=\$(date +%s)
+while :; do
+  '$AM_BINARY'; rc=\$?
+  now=\$(date +%s)
+  if (( now - window_start < 2 )); then
+    count=\$((count + 1))
+    if (( count >= 3 )); then
+      printf '\\n\\033[31m(agent-monitor: dashboard crashed %d times in <2s — giving up)\\033[0m\\n' "\$count"
+      printf '(exit=%s. Press any key to close this pane; run \`am kill && am\` to restart.)\\n' "\$rc"
+      read -n 1 -s
+      exit \$rc
+    fi
+  else
+    count=0; window_start=\$now
+  fi
+  sleep 0.2
+done
+EOF
+)
+
+  tmux new-session -d -s "$AM_TMUX_SESSION" -n monitor \
+    "bash -c $(printf %q "$supervisor")"
+  tmux set-option -t "$AM_TMUX_SESSION" -g remain-on-exit on >/dev/null 2>&1 || true
+  tmux split-window -v -l 30% -t "$AM_TMUX_SESSION:0" "$bottom_cmd"
+  tmux select-pane -t "$AM_TMUX_SESSION:0.0"
+
+  tmux set-option -g history-limit "$prev_history_limit" >/dev/null 2>&1 || true
+
+  install_session_keybindings
+}
+
+# Register pane-switching shortcuts scoped to the agent-monitor session.
+# Other tmux sessions and the user's personal config stay untouched —
+# we use a private root-replacement key-table seeded with the default
+# mouse bindings.
+install_session_keybindings() {
+  local tbl="agent-monitor-root"
+
+  tmux unbind-key -aq -T "$tbl" 2>/dev/null || true
+
+  local tmpf
+  tmpf="$(mktemp -t am-keys.XXXXXX)"
+  # shellcheck disable=SC2064
+  trap "rm -f '$tmpf'" RETURN
+  tmux list-keys -T root 2>/dev/null \
+    | sed "s/-T root /-T $tbl /" \
+    > "$tmpf"
+  if [[ -s "$tmpf" ]]; then
+    tmux source-file "$tmpf" 2>/dev/null || true
+  fi
+
+  tmux bind-key -T "$tbl" F2     select-pane -t :.0 2>/dev/null || true
+  tmux bind-key -T "$tbl" F3     select-pane -t :.1 2>/dev/null || true
+  tmux bind-key -T "$tbl" M-Tab  select-pane -t :.+ 2>/dev/null || true
+  tmux bind-key -T "$tbl" M-BTab select-pane -t :.- 2>/dev/null || true
+
+  tmux set-option -t "$AM_TMUX_SESSION" key-table "$tbl" >/dev/null 2>&1 || true
+}
+
+default_bottom_cmd() {
+  printf 'cursor-agent --yolo "$(cat %q)"' "$AM_AGENT_PROMPT"
+}
+
+attach_session() {
+  require_tmux
+  if [[ -n "${TMUX:-}" ]]; then
+    tmux switch-client -t "$AM_TMUX_SESSION" 2>/dev/null || tmux attach -t "$AM_TMUX_SESSION"
+  else
+    tmux attach -t "$AM_TMUX_SESSION"
+  fi
+}
+
+cmd_open() {
+  require_tmux
+  if session_exists; then
+    attach_session
+    return
+  fi
+  build_session "$(default_bottom_cmd)"
+  attach_session
+}
+
+cmd_attach() {
+  require_tmux
+  session_exists || {
+    echo "agent-monitor: no session named '$AM_TMUX_SESSION' (run 'am' to start)" >&2
+    exit 1
+  }
+  attach_session
+}
+
+cmd_detach() {
+  if [[ -n "${TMUX:-}" ]]; then
+    tmux detach-client
+  else
+    echo "agent-monitor: not inside a tmux client" >&2
+    exit 1
+  fi
+}
+
+cmd_kill() {
+  require_tmux
+  if session_exists; then
+    tmux kill-session -t "$AM_TMUX_SESSION"
+    echo "agent-monitor: killed '$AM_TMUX_SESSION' (monitored agents are unaffected)"
+  else
+    echo "agent-monitor: no session named '$AM_TMUX_SESSION'"
+  fi
+}
+
+cmd_list() {
+  require_binary
+  "$AM_BINARY" --list
+}
+
+# Find the JSONL transcript for a chat id by walking the projects dir.
+# Used by `am follow` so the bottom pane can tail the file directly.
+find_transcript_for_id() {
+  local id="$1" match
+  match="$(find "$HOME/.cursor/projects" \
+      -maxdepth 4 \
+      -type f \
+      -name "${id}.jsonl" \
+      -path '*/agent-transcripts/*' \
+      2>/dev/null | head -n 1)"
+  [[ -n "$match" ]] && printf '%s\n' "$match"
+}
+
+cmd_follow() {
+  local id="${1:-}"
+  [[ -n "$id" ]] || { echo "usage: am follow <chatId>" >&2; exit 2; }
+  local transcript; transcript="$(find_transcript_for_id "$id")"
+  [[ -n "$transcript" ]] || { echo "agent-monitor: no transcript found for id '$id'" >&2; exit 1; }
+
+  local bottom_cmd
+  bottom_cmd="bash -c 'source \"$AM_FOLLOW\"; follow_session \"$transcript\"'"
+
+  if session_exists; then
+    tmux respawn-pane -k -t "$AM_TMUX_SESSION:0.1" "$bottom_cmd"
+  else
+    build_session "$bottom_cmd"
+  fi
+  attach_session
+}
+
+cmd_resume() {
+  local id="${1:-}"
+  [[ -n "$id" ]] || { echo "usage: am resume <chatId>" >&2; exit 2; }
+  local bottom_cmd="cursor-agent --resume '$id'"
+  if session_exists; then
+    tmux respawn-pane -k -t "$AM_TMUX_SESSION:0.1" "$bottom_cmd"
+  else
+    build_session "$bottom_cmd"
+  fi
+  attach_session
+}
+
+# Rebuild the Go binary from $AM_HOME/go. Useful after a `git pull` if
+# Go is installed locally; install.sh fetches a prebuilt binary instead
+# when Go is missing.
+cmd_rebuild() {
+  if ! command -v go >/dev/null 2>&1; then
+    echo "agent-monitor: go is not installed (install via 'brew install go' or use prebuilt binary)" >&2
+    exit 1
+  fi
+  echo "agent-monitor: building $AM_BINARY_NAME …"
+  ( cd "$AM_HOME/go" \
+    && go build \
+        -trimpath \
+        -ldflags "-s -w -X main.version=$(_describe)" \
+        -o "$AM_BIN_DIR/$AM_BINARY_NAME" \
+        ./cmd/agent-monitor )
+  echo "agent-monitor: built $AM_BIN_DIR/$AM_BINARY_NAME"
+}
+
+# Bounce the dashboard pane only — leave the wt-manager pane (and any
+# follow/resume override) untouched. Used after `am rebuild` or after
+# editing source.
+cmd_restart() {
+  require_tmux
+  session_exists || {
+    echo "agent-monitor: no session to restart (run 'am' to start)" >&2
+    exit 1
+  }
+  tmux respawn-pane -k -t "$AM_TMUX_SESSION:0.0" "bash -c '\"$AM_BINARY\"'"
+  echo "agent-monitor: restarted dashboard pane (wt-manager pane unchanged)"
+}
+
+# Pull from origin and rebuild. Idempotent — safe to run on a clean tree.
+cmd_update() {
+  if ! command -v git >/dev/null 2>&1; then
+    echo "agent-monitor: git is not installed" >&2
+    exit 1
+  fi
+  if [[ ! -d "$AM_HOME/.git" ]]; then
+    echo "agent-monitor: $AM_HOME is not a git checkout (re-run install.sh from a clone instead)" >&2
+    exit 1
+  fi
+  ( cd "$AM_HOME" && git pull --ff-only )
+  if command -v go >/dev/null 2>&1; then
+    cmd_rebuild
+  else
+    "$AM_HOME/install.sh" --download-only
+  fi
+  if session_exists; then
+    cmd_restart
+  fi
+  echo "agent-monitor: update complete"
+}
+
+cmd_help() {
+  cat <<EOF
+am — agent-monitor: live dashboard for Cursor agent sessions
+
+Usage:
+  am                    start or attach the dashboard
+  am attach             attach an existing session (error if none)
+  am detach             detach current tmux client (keeps dashboard running)
+  am list               print active sessions + resume commands (no TUI)
+  am follow <chatId>    open dashboard with bottom pane live-tailing that session
+  am resume <chatId>    open dashboard with bottom pane running 'cursor-agent --resume <id>'
+  am kill               kill the dashboard's tmux session (monitored agents unaffected)
+  am rebuild            rebuild the Go binary from source (requires go on PATH)
+  am restart            bounce the dashboard pane (leave wt-manager untouched)
+  am update             git pull + rebuild + restart
+  am help               this message
+
+Env vars:
+  AM_TMUX_SESSION       default: agent-monitor
+  AM_REFRESH_MS         dashboard tick (ms), default: 2000
+  AM_IDLE_THRESHOLD_MIN hide sessions idle longer than this (min), default: 20
+  AM_MAX_CARDS          max cards rendered, default: 50
+  AM_WT_BIN             override the wt CLI path (default: ~/.claude/skills/worktrees/scripts/wt)
+EOF
+}
+
+# Print a short version string. Prefers `git describe` when running
+# from a checkout; falls back to "dev".
+_describe() {
+  if [[ -d "$AM_HOME/.git" ]] && command -v git >/dev/null 2>&1; then
+    ( cd "$AM_HOME" && git describe --tags --always --dirty 2>/dev/null ) || echo dev
+  else
+    echo dev
+  fi
+}
+
+case "${1:-}" in
+  ""|open)        cmd_open ;;
+  attach)         cmd_attach ;;
+  detach)         cmd_detach ;;
+  kill)           cmd_kill ;;
+  list)           cmd_list ;;
+  follow)         shift; cmd_follow "$@" ;;
+  resume)         shift; cmd_resume "$@" ;;
+  rebuild)        cmd_rebuild ;;
+  restart)        cmd_restart ;;
+  update)         cmd_update ;;
+  help|-h|--help) cmd_help ;;
+  *)              cmd_help; exit 2 ;;
+esac
