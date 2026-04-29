@@ -93,14 +93,29 @@ func (s *Scanner) Scan() []session.Session {
 		if !pe.IsDir() {
 			continue
 		}
-		// Worktree-backed project dirs always surface, regardless of
-		// IdleThreshold — the dashboard's contract is "1 card per
-		// worktree, always", so an idle agent on a worktree must not
-		// drop off the list. Primary-checkout sessions still age out
-		// at the cutoff so the dashboard doesn't fill up with weeks
-		// of stale chats.
+		// Worktree-backed project dirs normally always surface,
+		// regardless of IdleThreshold — the dashboard's contract is
+		// "1 card per worktree, always", so an idle agent on a
+		// worktree must not drop off the list. Primary-checkout
+		// sessions still age out at the cutoff so the dashboard
+		// doesn't fill up with weeks of stale chats.
 		isWorktree := strings.Contains(pe.Name(), "__worktrees__") ||
 			strings.Contains(pe.Name(), "-worktrees-")
+
+		// Ghost-card guard: a worktree-flagged project dir whose actual
+		// worktree directory has been deleted (e.g. `git worktree
+		// remove` outside the dashboard, or a manual `rm -rf`) should
+		// NOT be exempted from the idle cutoff. Without this check the
+		// session lives forever because the worktree-immortality rule
+		// above never fires the cutoff. We test orphanage cheaply:
+		// decode the project-dir basename to a primary path, then
+		// stat the worktree slug under `.worktrees/`. If either step
+		// fails, treat the session as a normal (non-worktree) one
+		// subject to the idle cutoff.
+		if isWorktree && isOrphanedWorktree(pe.Name()) {
+			isWorktree = false
+		}
+
 		atRoot := filepath.Join(root, pe.Name(), "agent-transcripts")
 		ids, err := os.ReadDir(atRoot)
 		if err != nil {
@@ -404,6 +419,46 @@ func isGitRepo(path string) bool {
 	}
 	// `.git` may be a directory (regular repo) or a file (worktree linked file).
 	return st.IsDir() || st.Mode().IsRegular()
+}
+
+// isOrphanedWorktree returns true when a project-dir basename claims to
+// be worktree-backed (`-worktrees-<slug>` or `__worktrees__<slug>`) but
+// the corresponding `.worktrees/<slug>/` directory no longer exists on
+// disk. Used by Scan() to demote ghost cards from worktree-immortality
+// back to normal idle-cutoff timing.
+//
+// Cheapness contract: at most two stat() calls and a single ReadDir of
+// the primary's `.worktrees/` (already done by SlugFromEncoded). On a
+// quiet dashboard the slow path runs only for orphaned dirs, of which
+// there are typically zero or one.
+func isOrphanedWorktree(projectDir string) bool {
+	primary := DecodeProjectPath(projectDir)
+	if primary == "" {
+		// Can't resolve the primary repo — be conservative and treat
+		// the session as live so we don't drop legitimate cards on
+		// machines where the path-decoder hasn't seen this repo
+		// shape before.
+		return false
+	}
+	// Pull the encoded slug tail, then resolve it against the
+	// on-disk worktree directory names. SlugFromEncoded returns ""
+	// when the slug doesn't exist on disk, which is exactly our
+	// orphan signal.
+	encoded := worktreeSlugFor(projectDir)
+	if encoded == "" {
+		return false
+	}
+	if slug := SlugFromEncoded(primary, encoded); slug != "" {
+		return false
+	}
+	// One last belt-and-suspenders: try a direct stat in case
+	// SlugFromEncoded missed a non-`-`-encoded edge case (the encoded
+	// tail might already be the literal on-disk name).
+	direct := filepath.Join(primary, ".worktrees", encoded)
+	if st, err := os.Stat(direct); err == nil && st.IsDir() {
+		return false
+	}
+	return true
 }
 
 // SlugFromEncoded resolves an encoded slug (Cursor-flavored: `/` and `__`

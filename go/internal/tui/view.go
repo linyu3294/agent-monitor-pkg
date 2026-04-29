@@ -10,38 +10,63 @@ import (
 	"github.com/agent-monitor/agent-monitor/internal/session"
 )
 
+// Dracula-inspired accent palette. Centralized so re-theming is one
+// edit away. Hex literals degrade gracefully on 256-color terminals
+// via lipgloss's color profile detection (same mechanism that already
+// lets `colorPink` work as the modal border).
+var (
+	colorPink       = lipgloss.Color("#FF10F0") // neon pink — modal frame, header title, ▶ caret
+	colorPinkSoft   = lipgloss.Color("#FF79C6") // softer pink — paused state
+	colorPurple     = lipgloss.Color("#BD93F9") // bright purple — accent borders, thinking state, footer
+	colorPurpleDim  = lipgloss.Color("#6272A4") // dim purple — card content border, secondary chrome
+	colorGreen      = lipgloss.Color("#7FE3C4") // mint — active state, chat ids (matches tmux status bar)
+	colorYellow     = lipgloss.Color("#F1FA8C") // sand yellow — confirm bar (warning, not danger)
+	colorRed        = lipgloss.Color("#FF5555") // soft red — confirm bar errors
+	colorGrey       = lipgloss.Color("245")     // unchanged neutral grey for idle
+	colorGreyDim    = lipgloss.Color("8")       // unchanged terminal-default dim
+)
+
 // styleTable holds every reusable lipgloss style. Initialized once;
 // lipgloss caches rendering internally so style reuse is essentially
 // free.
 var (
-	styleHeader   = lipgloss.NewStyle().Bold(true)
-	styleHeaderHR = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	styleDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	styleSel      = lipgloss.NewStyle().Reverse(true)
+	styleHeader   = lipgloss.NewStyle().Bold(true).Foreground(colorPink)
+	styleHeaderHR = lipgloss.NewStyle().Foreground(colorPurple)
+	styleDim      = lipgloss.NewStyle().Foreground(colorGreyDim)
+	styleSel      = lipgloss.NewStyle().Foreground(colorPink).Bold(true)
 
-	styleStateActive   = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))  // bright green
-	styleStateThinking = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))  // bright yellow
-	styleStateIdle     = lipgloss.NewStyle().Foreground(lipgloss.Color("245")) // grey
-	stylePaused        = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))  // bright magenta
+	styleStateActive   = lipgloss.NewStyle().Foreground(colorGreen).Bold(true) // neon green
+	styleStateThinking = lipgloss.NewStyle().Foreground(colorPurple).Bold(true) // purple (was yellow)
+	styleStateIdle     = lipgloss.NewStyle().Foreground(colorGrey)              // grey, unchanged
+	stylePaused        = lipgloss.NewStyle().Foreground(colorPinkSoft).Bold(true) // soft pink
 
-	styleCardBorder = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	styleLabel      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	styleValue      = lipgloss.NewStyle()
-	styleValueBold  = lipgloss.NewStyle().Bold(true)
+	// Card borders: title row gets the brighter accent so each card's
+	// header pops; the content rows use a dimmer purple so the values
+	// stay the visual focus.
+	styleCardBorderTop = lipgloss.NewStyle().Foreground(colorPurple)
+	styleCardBorder    = lipgloss.NewStyle().Foreground(colorPurpleDim)
+	styleLabel         = lipgloss.NewStyle().Foreground(colorGreyDim)
+	styleValue         = lipgloss.NewStyle()
+	styleValueBold     = lipgloss.NewStyle().Bold(true)
+	styleValueId       = lipgloss.NewStyle().Foreground(colorGreen).Bold(true) // chat-id row pops
 
-	styleConfirm    = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-	styleConfirmErr = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	styleConfirm    = lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
+	styleConfirmErr = lipgloss.NewStyle().Foreground(colorRed).Bold(true)
 
-	styleHelpTitle = lipgloss.NewStyle().Bold(true)
+	styleFooter    = lipgloss.NewStyle().Foreground(colorPurple)
+	styleHelpTitle = lipgloss.NewStyle().Bold(true).Foreground(colorPink)
+	// styleHelpBody is the modal body text. Bold but uncolored so the
+	// long help text stays readable; the colored bits (the modal frame
+	// and any embedded titles) provide all the accent we need.
+	styleHelpBody = lipgloss.NewStyle().Bold(true)
 
 	// Neon-pink rounded border used to frame full-screen modals (help,
-	// new-worktree). Truecolor hex falls back gracefully on 256-color
-	// terminals via lipgloss's color profile detection.
-	styleModalBorder = lipgloss.Color("#FF10F0")
-	styleModal       = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(styleModalBorder).
-				Padding(1, 3)
+	// new-worktree). Same hex as the header title for visual consistency.
+	styleModalBorder = colorPink
+	styleModal = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(styleModalBorder).
+			Padding(1, 2)
 )
 
 func styleForState(state session.State) lipgloss.Style {
@@ -77,17 +102,24 @@ func (m *model) View() string {
 func (m *model) viewList() string {
 	var b strings.Builder
 
-	// Header.
-	left := styleHeader.Render(" agent-monitor ")
-	right := fmt.Sprintf(" %s  ·  %d sessions ", time.Now().Format("15:04:05"), len(m.sessions))
+	// Header. 2-col left + 2-col right margin so the title and timestamp
+	// line up with the card content (cards render with a 2-col selmark
+	// margin) and the right-aligned chrome doesn't kiss the terminal
+	// edge. The horizontal rule below stays full-width on purpose so
+	// the dashboard reads as one continuous frame.
+	const headerLeftPad = "  "
+	const headerRightPad = "  "
+	left := styleHeader.Render("agent-monitor")
+	right := fmt.Sprintf("%s  ·  %d sessions", time.Now().Format("15:04:05"), len(m.sessions))
 	if m.paused {
-		right = " [PAUSED]  " + right
+		right = "[PAUSED]  " + right
 	}
-	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
-	if pad < 0 {
-		pad = 0
+	avail := m.width - lipgloss.Width(headerLeftPad) - lipgloss.Width(headerRightPad)
+	gap := avail - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 0 {
+		gap = 0
 	}
-	b.WriteString(left + strings.Repeat(" ", pad) + styleDim.Render(right))
+	b.WriteString(headerLeftPad + left + strings.Repeat(" ", gap) + styleDim.Render(right) + headerRightPad)
 	b.WriteString("\n")
 	b.WriteString(styleHeaderHR.Render(strings.Repeat("─", m.width)))
 	b.WriteString("\n")
@@ -243,13 +275,16 @@ func (m *model) renderCard(s session.Session, selected bool) string {
 	if dashCount < 2 {
 		dashCount = 2
 	}
-	dashes := styleCardBorder.Render(strings.Repeat("─", dashCount))
+	// Card title row uses the brighter purple accent so each card's
+	// header pops; the content rows below stay on the dimmer border
+	// style so the values remain the visual focus.
+	dashes := styleCardBorderTop.Render(strings.Repeat("─", dashCount))
 	top := selmark +
-		styleCardBorder.Render("┌─") +
+		styleCardBorderTop.Render("┌─") +
 		title +
 		dashes +
 		rightLabel +
-		styleCardBorder.Render("─┐")
+		styleCardBorderTop.Render("─┐")
 
 	contentW := totalW - 4
 	rows := []string{
@@ -261,7 +296,7 @@ func (m *model) renderCard(s session.Session, selected bool) string {
 		rows = append(rows, renderRow(contentW, "last:", quoted, styleValue))
 	}
 	rows = append(rows,
-		renderRow(contentW, "id:", s.ID, styleValueBold),
+		renderRow(contentW, "id:", s.ID, styleValueId),
 		renderRow(contentW, "cmd:", "cursor-agent --resume "+s.ID, styleDim),
 	)
 
@@ -336,64 +371,60 @@ func (m *model) renderFooter() string {
 	short := "[j/k] move  [f] follow  [a] attach  [n] new  [i] ide"
 	rhs := fmt.Sprintf("%d sessions", len(m.sessions))
 
+	// Match the card content's 2-col left margin (cards render with
+	// `"  "` selmark or `"▶ "`) and a symmetric 2-col right margin so
+	// the right-aligned session count doesn't kiss the terminal edge.
+	const leftPad = "  "
+	const rightPad = "  "
+	avail := m.width - lipgloss.Width(leftPad) - lipgloss.Width(rightPad)
+
 	candidates := []string{full, mid, short}
 	for _, lhs := range candidates {
-		pad := m.width - lipgloss.Width(lhs) - lipgloss.Width(rhs)
-		if pad >= 1 {
-			return styleDim.Render(lhs+strings.Repeat(" ", pad)+rhs) + "\n"
+		gap := avail - lipgloss.Width(lhs) - lipgloss.Width(rhs)
+		if gap >= 1 {
+			return leftPad + styleFooter.Render(lhs+strings.Repeat(" ", gap)+rhs) + rightPad + "\n"
 		}
 	}
-	return styleDim.Render(short) + "\n"
+	return leftPad + styleFooter.Render(short) + "\n"
 }
 
 func (m *model) viewHelp() string {
 	body := `agent-monitor — keyboard reference
 
 Navigation
-  j / ↓             next card
-  k / ↑             previous card
-  g / G             first / last card
-  Enter             focus selected card in wt-manager pane
+  j/↓  k/↑        next / previous card
+  g / G            first / last card
+  Enter            focus card in wt-manager
 
 Multi-agent
-  f                 follow (live transcript tail in iTerm)
-  a                 resume in new iTerm tab
-  y                 copy chat id to clipboard
-  o                 open worktree (or primary) in Cursor
-  i                 open nvim + Diffview iTerm tab (worktree only)
+  f    follow (live transcript tail)
+  a    resume in new iTerm tab
+  y    copy chat id to clipboard
+  o    open in Cursor
+  i    open nvim + Diffview (worktree only)
 
 Worktree lifecycle
-  n                 new worktree (modal: branch / base / prompt)
-  r                 remove the selected card (y/N confirm):
-                      worktree card → kill agent + 'wt remove <slug>'
-                                      (worktree dir + branch deleted)
-                      primary card  → kill agent + drop the card
-                                      (no filesystem changes)
-  s                 wt sync (rebase the worktree onto its base)
+  n    new worktree (branch / base / prompt)
+  r    remove selected (y/N confirm)
+  s    wt sync (rebase onto base)
 
 Agent control
-  x                 pause / resume the selected agent (SIGSTOP / SIGCONT)
+  x    pause / resume (SIGSTOP / SIGCONT)
 
-Dashboard control
-  p                 pause / resume auto-refresh
-  q / D             detach tmux (dashboard keeps running)
-  Q                 kill the agent-monitor tmux session
-  ?                 this help
+Dashboard
+  p    pause / resume auto-refresh
+  q/D  detach tmux
+  Q    kill session
+  ?    this help
 
-Pane switching (handled by tmux, scoped to this session)
-  F2 / F3                top pane / bottom pane
-                         (macOS: needs Fn+F2 unless "Use F1, F2 keys
-                          as standard function keys" is enabled)
-  C-Up / C-Down          top / bottom pane (recommended fallback —
-                         works in every terminal, no setup needed)
-  M-Tab / M-Shift-Tab    cycle next / previous (needs iTerm Option=Esc+)
-  M-1 / M-2              top / bottom pane (needs iTerm Option=Esc+)
-  M-Up / M-Down          top / bottom pane (needs iTerm Option=Esc+)
-  prefix F2 / F3         top / bottom pane, via tmux prefix (always works)
-  prefix Tab / BTab      cycle next / previous, via tmux prefix
+Pane switching (tmux, session-scoped)
+  C-Up / C-Down     top / bottom (recommended)
+  F2 / F3           top / bottom (macOS: Fn+F2)
+  M-1 / M-2         top / bottom (Option=Esc+)
+  prefix Tab/BTab   cycle panes (always works)
 
 Press any key to close.`
-	return m.centerInModal(styleHelpTitle.Render(body))
+	return m.centerInModal(styleHelpBody.Render(body))
 }
 
 func (m *model) viewNewWt() string {
