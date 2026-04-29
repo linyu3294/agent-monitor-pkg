@@ -210,9 +210,16 @@ install_session_keybindings() {
 
   tmux set-option -t "$AM_TMUX_SESSION" key-table "$tbl" >/dev/null 2>&1 || true
 
-  # Status bar styling — scoped to the agent-monitor session so the
-  # user's global tmux theme is untouched. Dark bg with purple/pink
-  # accents to match the dashboard's Dracula-inspired palette.
+  # Pane background — Dracula base (#282a36) so the mint green and
+  # purple accents pop. Scoped to this session only.
+  tmux set-option  -t "$AM_TMUX_SESSION" window-style        "bg=#282a36" >/dev/null 2>&1 || true
+  tmux set-option  -t "$AM_TMUX_SESSION" window-active-style  "bg=#282a36" >/dev/null 2>&1 || true
+
+  # Pane divider line — dim purple to blend with the card borders.
+  tmux set-option  -t "$AM_TMUX_SESSION" pane-border-style        "fg=#6272A4,bg=#282a36" >/dev/null 2>&1 || true
+  tmux set-option  -t "$AM_TMUX_SESSION" pane-active-border-style "fg=#BD93F9,bg=#282a36" >/dev/null 2>&1 || true
+
+  # Status bar styling — dark bg with purple/mint accents.
   tmux set-option -t "$AM_TMUX_SESSION" status-style "bg=#282a36,fg=#BD93F9" >/dev/null 2>&1 || true
   tmux set-option -t "$AM_TMUX_SESSION" status-left-style "bg=#BD93F9,fg=#282a36,bold" >/dev/null 2>&1 || true
   tmux set-option -t "$AM_TMUX_SESSION" status-right-style "fg=#7FE3C4" >/dev/null 2>&1 || true
