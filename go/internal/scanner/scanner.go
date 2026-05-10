@@ -197,7 +197,92 @@ func (s *Scanner) Scan() []session.Session {
 		}
 	}
 
+	// Inject stub cards for worktrees that exist on disk but have no
+	// transcript yet, so the dashboard always shows 1 card per worktree.
+	out = s.injectOrphanWorktrees(out)
+
 	return out
+}
+
+// injectOrphanWorktrees scans every primary repo's `.worktrees/`
+// directory and adds a stub Session for any worktree slug that doesn't
+// already have a card in `existing`. This ensures the dashboard shows
+// every worktree even if no agent session has run there yet.
+func (s *Scanner) injectOrphanWorktrees(existing []session.Session) []session.Session {
+	// Build a set of worktree slugs already covered by transcript-backed cards.
+	coveredSlugs := map[string]bool{}
+	// Also collect the set of primary repo paths we've seen, so we know
+	// which repos to scan for worktrees.
+	primaryPaths := map[string]bool{}
+	for _, sess := range existing {
+		if sess.WorktreeSlug != "" {
+			primary := DecodeProjectPath(sess.ProjectDir)
+			if primary != "" {
+				slug := SlugFromEncoded(primary, sess.WorktreeSlug)
+				if slug != "" {
+					coveredSlugs[primary+"/"+slug] = true
+				}
+			}
+		}
+		p := DecodeProjectPath(sess.ProjectDir)
+		if p != "" {
+			primaryPaths[p] = true
+		}
+	}
+
+	// Also discover primary repos from project dirs that have no
+	// worktree suffix (the main checkout) so we still find worktrees
+	// even when the only transcript is on the primary checkout.
+	entries, _ := os.ReadDir(s.opts.ProjectsDir)
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		p := DecodeProjectPath(e.Name())
+		if p != "" {
+			primaryPaths[p] = true
+		}
+	}
+
+	for primary := range primaryPaths {
+		wtRoot := filepath.Join(primary, ".worktrees")
+		slugs, err := os.ReadDir(wtRoot)
+		if err != nil {
+			continue
+		}
+		for _, slug := range slugs {
+			if !slug.IsDir() {
+				continue
+			}
+			name := slug.Name()
+			key := primary + "/" + name
+			if coveredSlugs[key] {
+				continue
+			}
+			// No transcript for this worktree — inject a stub card.
+			wtPath := filepath.Join(wtRoot, name)
+			info, err := os.Stat(wtPath)
+			var mtime int64
+			if err == nil {
+				mtime = info.ModTime().Unix()
+			}
+			// Build the encoded project dir the way Cursor would.
+			encodedPrimary := strings.TrimPrefix(primary, "/")
+			encodedPrimary = strings.ReplaceAll(encodedPrimary, "/", "-")
+			encodedSlug := strings.ReplaceAll(name, "__", "-")
+			projDir := encodedPrimary + "-worktrees-" + encodedSlug
+
+			existing = append(existing, session.Session{
+				ID:             "(no session)",
+				ProjectDir:     projDir,
+				Project:        session.ProjectLabel(projDir),
+				WorktreeSlug:   encodedSlug,
+				Mtime:          mtime,
+				State:          session.StateIdle,
+			})
+		}
+	}
+	return existing
 }
 
 // chatIDFromPath extracts the UUID from a transcript path of the shape
