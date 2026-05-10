@@ -267,9 +267,8 @@ func (s *Scanner) injectOrphanWorktrees(existing []session.Session) []session.Se
 				mtime = info.ModTime().Unix()
 			}
 			// Build the encoded project dir the way Cursor would.
-			encodedPrimary := strings.TrimPrefix(primary, "/")
-			encodedPrimary = strings.ReplaceAll(encodedPrimary, "/", "-")
-			encodedSlug := strings.ReplaceAll(name, "__", "-")
+			encodedPrimary := EncodeForCursor(strings.TrimPrefix(primary, "/"))
+			encodedSlug := EncodeForCursor(name)
 			projDir := encodedPrimary + "-worktrees-" + encodedSlug
 
 			existing = append(existing, session.Session{
@@ -546,9 +545,44 @@ func isOrphanedWorktree(projectDir string) bool {
 	return true
 }
 
-// SlugFromEncoded resolves an encoded slug (Cursor-flavored: `/` and `__`
-// both collapse to `-`) back to the real on-disk worktree slug by scanning
-// `<primary>/.worktrees/`. Returns "" on no match.
+// EncodeForCursor mirrors Cursor's project-dir encoding: every
+// non-alphanumeric rune (other than `-` itself) becomes `-`, runs of
+// consecutive `-` collapse to one, and any trailing `-` is trimmed.
+//
+// Examples:
+//
+//	fix__fe-1098-distribution_amounts → fix-fe-1098-distribution-amounts
+//	chore__cover-poker-v2-tests-100%  → chore-cover-poker-v2-tests-100
+//	with=eligibility_validation       → with-eligibility-validation
+//
+// Exported so callers (e.g. injectOrphanWorktrees) can synthesize the
+// same encoded form Cursor would produce for an on-disk path.
+func EncodeForCursor(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	out := b.String()
+	for strings.Contains(out, "--") {
+		out = strings.ReplaceAll(out, "--", "-")
+	}
+	out = strings.TrimSuffix(out, "-")
+	return out
+}
+
+// SlugFromEncoded resolves an encoded slug (Cursor-flavored: `_` and `/`
+// both collapse to `-`, runs of `-` collapse to one) back to the real
+// on-disk worktree slug by scanning `<primary>/.worktrees/`. Returns ""
+// on no match.
 func SlugFromEncoded(primary, encoded string) string {
 	root := filepath.Join(primary, ".worktrees")
 	entries, err := os.ReadDir(root)
@@ -559,12 +593,8 @@ func SlugFromEncoded(primary, encoded string) string {
 		if !e.IsDir() {
 			continue
 		}
-		base := e.Name()
-		// Mirror Cursor encoding: `__` → `-` and `/` → `-`.
-		ee := strings.ReplaceAll(base, "__", "-")
-		ee = strings.ReplaceAll(ee, "/", "-")
-		if ee == encoded {
-			return base
+		if EncodeForCursor(e.Name()) == encoded {
+			return e.Name()
 		}
 	}
 	return ""
