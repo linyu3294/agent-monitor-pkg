@@ -96,10 +96,31 @@ build_from_source() {
         ./cmd/agent-monitor )
 }
 
-# Download the matching prebuilt binary from a GitHub release. GitHub uses
-# two URL shapes: `.../releases/latest/download/<asset>` for the latest
-# release, and `.../releases/download/<tag>/<asset>` for a specific tag.
+# Download the matching prebuilt binary from a GitHub release.
+#
+# If the GitHub CLI (`gh`) is installed and authenticated we use it first:
+# it works for PRIVATE repos (the unauthenticated curl path below only
+# works when the repo and its releases are public).
+#
+# Falls back to a plain curl against the public release asset URL. GitHub
+# uses two URL shapes: `.../releases/latest/download/<asset>` for the
+# latest release, and `.../releases/download/<tag>/<asset>` for a tag.
 download_prebuilt() {
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    step "downloading prebuilt $binary_name via gh (works for private repos)"
+    local tag="$RELEASE"
+    [[ "$tag" == "latest" ]] && tag="$(gh release view --repo "${OWNER}/${REPO}" --json tagName --jq .tagName 2>/dev/null || true)"
+    if [[ -n "$tag" ]] && gh release download "$tag" \
+        --repo "${OWNER}/${REPO}" \
+        --pattern "$binary_name" \
+        --output "$binary_path" \
+        --clobber 2>/dev/null; then
+      chmod +x "$binary_path"
+      return 0
+    fi
+    warn "gh download failed — trying public URL"
+  fi
+
   local url
   if [[ "$RELEASE" == "latest" ]]; then
     url="https://github.com/${OWNER}/${REPO}/releases/latest/download/${binary_name}"
