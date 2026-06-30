@@ -25,7 +25,7 @@ Trigger on phrases like:
 ## Launch
 
 ```bash
-am          # or `~/.claude/skills/agent-monitor/am` if not on PATH
+am          # or `~/.claude/skills/agent-monitor-pkg/am` if not on PATH
 ```
 
 If a tmux session named `agent-monitor` already exists, `am` attaches to it. Otherwise it spawns one: top pane is the Go dashboard, bottom pane is a `cursor-agent --yolo` agent constrained to only invoke the `wt` CLI (the worktrees-manager agent).

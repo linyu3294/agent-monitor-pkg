@@ -17,8 +17,8 @@
 
 set -euo pipefail
 
-OWNER="${AM_GITHUB_OWNER:-agent-monitor}"   # override at install time
-REPO="${AM_GITHUB_REPO:-agent-monitor}"
+OWNER="${AM_GITHUB_OWNER:-linyu3294}"          # override at install time
+REPO="${AM_GITHUB_REPO:-agent-monitor-pkg}"
 RELEASE="${AM_RELEASE_TAG:-latest}"
 
 # --- self-locating ---
@@ -77,29 +77,68 @@ binary_path="$AM_HOME/bin/$binary_name"
 
 mkdir -p "$AM_HOME/bin"
 
-if command -v go >/dev/null 2>&1; then
+# Build the Go binary from source. Returns non-zero (without aborting the
+# script, thanks to the caller's `if`) so we can fall back to a download.
+build_from_source() {
   step "go found ($(go version | awk '{print $3}')) — building from source"
-  pushd "$AM_HOME/go" >/dev/null
-  version="dev"
+  local version="dev"
   if [[ -d "$AM_HOME/.git" ]] && command -v git >/dev/null 2>&1; then
     version="$(git -C "$AM_HOME" describe --tags --always --dirty 2>/dev/null || echo dev)"
   fi
-  go build \
-    -trimpath \
-    -ldflags "-s -w -X main.version=$version" \
-    -o "$binary_path" \
-    ./cmd/agent-monitor
-  popd >/dev/null
-  step "built $binary_path"
-else
-  step "go not found — downloading prebuilt $binary_name from GitHub release '$RELEASE'"
-  url="https://github.com/${OWNER}/${REPO}/releases/${RELEASE}/download/${binary_name}"
+  # go.mod requires a recent Go (deps need >=1.24). On hosts with an older
+  # Go, the default GOTOOLCHAIN=auto fetches the right toolchain on the fly;
+  # we only set it if the user hasn't pinned their own preference.
+  ( cd "$AM_HOME/go" \
+    && GOTOOLCHAIN="${GOTOOLCHAIN:-auto}" go build \
+        -trimpath \
+        -ldflags "-s -w -X main.version=$version" \
+        -o "$binary_path" \
+        ./cmd/agent-monitor )
+}
+
+# Download the matching prebuilt binary from a GitHub release. GitHub uses
+# two URL shapes: `.../releases/latest/download/<asset>` for the latest
+# release, and `.../releases/download/<tag>/<asset>` for a specific tag.
+download_prebuilt() {
+  local url
+  if [[ "$RELEASE" == "latest" ]]; then
+    url="https://github.com/${OWNER}/${REPO}/releases/latest/download/${binary_name}"
+  else
+    url="https://github.com/${OWNER}/${REPO}/releases/download/${RELEASE}/${binary_name}"
+  fi
+  step "downloading prebuilt $binary_name from $url"
   if ! curl --fail --location --output "$binary_path" "$url" 2>/dev/null; then
-    fail "download failed: $url
-hint: install go (brew install go) and re-run install.sh, or check the release tag"
+    return 1
   fi
   chmod +x "$binary_path"
-  step "downloaded $binary_path"
+}
+
+acquired=0
+if command -v go >/dev/null 2>&1; then
+  if build_from_source; then
+    step "built $binary_path"
+    acquired=1
+  else
+    warn "build from source failed — falling back to a prebuilt download"
+  fi
+fi
+
+if (( acquired == 0 )); then
+  if download_prebuilt; then
+    step "downloaded $binary_path"
+    acquired=1
+  fi
+fi
+
+if (( acquired == 0 )); then
+  if command -v go >/dev/null 2>&1; then
+    fail "could not build from source and no prebuilt binary was available.
+Check the build error above, or file an issue at https://github.com/${OWNER}/${REPO}"
+  else
+    fail "go is not installed and the prebuilt download failed.
+Install go (brew install go) and re-run install.sh, or verify a release exists at
+https://github.com/${OWNER}/${REPO}/releases"
+  fi
 fi
 
 # Smoke test the binary so we surface obvious problems before someone
@@ -113,6 +152,10 @@ if (( DOWNLOAD_ONLY == 1 )); then
   step "download-only: skipping symlink"
   exit 0
 fi
+
+# Make sure the launcher is executable. git preserves the +x bit, but a
+# ZIP/tarball download of the repo does not, which would break the symlink.
+chmod +x "$AM_HOME/am" 2>/dev/null || true
 
 # Symlink $AM_HOME/am → ~/.local/bin/am, replacing any existing link.
 local_bin="$HOME/.local/bin"

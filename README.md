@@ -9,9 +9,12 @@ Live dashboard for every Cursor agent session running on your machine. Single-pa
 One command from a clean shell:
 
 ```bash
-git clone https://github.com/<owner>/agent-monitor ~/.claude/skills/agent-monitor && \
-  ~/.claude/skills/agent-monitor/install.sh
+git clone https://github.com/linyu3294/agent-monitor-pkg ~/.claude/skills/agent-monitor-pkg && \
+  ~/.claude/skills/agent-monitor-pkg/install.sh
 ```
+
+The install dir is not special — `install.sh` and `am` self-locate, so you can clone
+anywhere (e.g. `~/tools/agent-monitor-pkg`) and it still works.
 
 Then:
 
@@ -111,7 +114,7 @@ am help           subcommand list + env vars
 ## Uninstall
 
 ```bash
-~/.claude/skills/agent-monitor/uninstall.sh
+~/.claude/skills/agent-monitor-pkg/uninstall.sh
 ```
 
 Kills the tmux session, removes the `~/.local/bin/am` symlink, and (with confirmation) deletes the install dir. Monitored `cursor-agent` processes and transcripts are never touched.
