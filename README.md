@@ -1,3 +1,9 @@
+
+
+
+
+
+<img width="815" height="1006" alt="Screenshot 2026-07-31 at 11 24 34 AM" src="https://github.com/user-attachments/assets/abae94ed-a30d-4101-a2c4-5c296c39f5ff" />
 # agent-monitor
 
 Live dashboard for every Cursor agent session running on your machine. Single-pane TUI plus a tmux-hosted worktree-manager pane — see every agent at once, follow one live, take over a chat in a fresh iTerm tab, spin up new worktrees, all in one keystroke.
