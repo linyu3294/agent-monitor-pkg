@@ -1,9 +1,8 @@
 
 
 
+<img width="1709" height="1013" alt="Screenshot 2026-07-31 at 11 29 41 AM" src="https://github.com/user-attachments/assets/609617ef-2810-4d68-a6ce-b9c44717d68b" />
 
-
-<img width="815" height="1006" alt="Screenshot 2026-07-31 at 11 24 34 AM" src="https://github.com/user-attachments/assets/abae94ed-a30d-4101-a2c4-5c296c39f5ff" />
 
 
 
