@@ -47,7 +47,10 @@ func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		_ = exec.Command("tmux", "kill-session", "-t", sess).Run()
 		return m, tea.Quit
 	case "ctrl+c":
-		return m, tea.Quit
+		// Quitting here only makes the `am` supervisor respawn the
+		// dashboard, and a second Ctrl-C during that respawn gap used
+		// to kill the pane outright.
+		return m, m.flashConfirm("ctrl+c does nothing here", "q = detach   Q = kill the agent-monitor session")
 	case "q", "D":
 		// Detach tmux, leave the dashboard running. We don't try to be
 		// clever — if not in tmux, just exit.

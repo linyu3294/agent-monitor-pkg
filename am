@@ -80,30 +80,22 @@ session_exists() {
   tmux has-session -t "$AM_TMUX_SESSION" 2>/dev/null
 }
 
-build_session() {
-  require_tmux
-  require_binary
-  local bottom_cmd="$1"
-
-  # Disable pane scrollback for this session so scrolling up doesn't
-  # reveal every previous repaint. We flip the global setting, create
-  # the session (panes inherit 0), then restore the global value.
-  local prev_history_limit
-  prev_history_limit="$(tmux show-option -gv history-limit 2>/dev/null || echo 2000)"
-  tmux set-option -g history-limit 0 >/dev/null 2>&1 || true
-
-  # Wrap the dashboard in a self-restarting supervisor loop so a single
-  # crash doesn't leave a "Pane is dead" corpse. Crash-loop protection:
-  # if the binary exits 3 times in <2 s, stop respawning so the user can
-  # see the error.
+# Tmux command for the dashboard pane: a self-restarting supervisor loop
+# so a single crash doesn't leave a "Pane is dead" corpse. The INT trap
+# keeps a Ctrl-C that lands between restarts (terminal back in cooked
+# mode) from killing the loop itself. Crash-loop protection: if the
+# binary fails 3 times in <2 s, stop respawning so the user can see the
+# error. Clean exits don't count.
+supervisor_cmd() {
   local supervisor
   supervisor=$(cat <<EOF
 set -u
+trap : INT
 count=0; window_start=\$(date +%s)
 while :; do
   '$AM_BINARY'; rc=\$?
   now=\$(date +%s)
-  if (( now - window_start < 2 )); then
+  if (( rc != 0 && now - window_start < 2 )); then
     count=\$((count + 1))
     if (( count >= 3 )); then
       printf '\\n\\033[31m(agent-monitor: dashboard crashed %d times in <2s — giving up)\\033[0m\\n' "\$count"
@@ -118,9 +110,22 @@ while :; do
 done
 EOF
 )
+  printf 'bash -c %q' "$supervisor"
+}
 
-  tmux new-session -d -s "$AM_TMUX_SESSION" -n monitor \
-    "bash -c $(printf %q "$supervisor")"
+build_session() {
+  require_tmux
+  require_binary
+  local bottom_cmd="$1"
+
+  # Disable pane scrollback for this session so scrolling up doesn't
+  # reveal every previous repaint. We flip the global setting, create
+  # the session (panes inherit 0), then restore the global value.
+  local prev_history_limit
+  prev_history_limit="$(tmux show-option -gv history-limit 2>/dev/null || echo 2000)"
+  tmux set-option -g history-limit 0 >/dev/null 2>&1 || true
+
+  tmux new-session -d -s "$AM_TMUX_SESSION" -n monitor "$(supervisor_cmd)"
   tmux set-option -t "$AM_TMUX_SESSION" -g remain-on-exit on >/dev/null 2>&1 || true
   tmux split-window -v -l 30% -t "$AM_TMUX_SESSION:0" "$bottom_cmd"
   tmux select-pane -t "$AM_TMUX_SESSION:0.0"
@@ -354,7 +359,7 @@ cmd_restart() {
     echo "agent-monitor: no session to restart (run 'am' to start)" >&2
     exit 1
   }
-  tmux respawn-pane -k -t "$AM_TMUX_SESSION:0.0" "bash -c '\"$AM_BINARY\"'"
+  tmux respawn-pane -k -t "$AM_TMUX_SESSION:0.0" "$(supervisor_cmd)"
   # Refresh the key bindings too — `am restart` is the canonical "I just
   # upgraded the launcher" command, and users expect new bindings to
   # land without a full `am kill && am` cycle.
