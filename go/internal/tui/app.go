@@ -74,6 +74,8 @@ type model struct {
 	selected     int
 	scrollOffset int  // index of the topmost card rendered in the viewport
 	paused       bool // dashboard auto-refresh paused (the `p` hotkey)
+	showEmpty    bool // show stub cards for worktrees with no chat (the `e` hotkey)
+	hiddenEmpty  int  // stub cards filtered out on the last refresh
 
 	state    uiState
 	confirm  confirmBar
@@ -101,6 +103,7 @@ type tickMsg time.Time
 type scanResultMsg struct {
 	sessions    []session.Session
 	wtManagerID string
+	hiddenEmpty int
 }
 
 // confirmExpireMsg clears the bottom bar.
@@ -180,14 +183,20 @@ func (m *model) refreshCmd() tea.Cmd {
 	for k := range m.tombstones {
 		tombstones[k] = struct{}{}
 	}
+	showEmpty := m.showEmpty
 	return func() tea.Msg {
 		m.proc.Refresh()
 		raw := m.scanner.Scan()
 		var wtmID string
+		hiddenEmpty := 0
 		filtered := raw[:0]
 		seenWorktree := map[string]bool{}
 		for _, s := range raw {
 			if _, ok := tombstones[tombstoneKey(s)]; ok {
+				continue
+			}
+			if s.ID == scanner.NoSessionID && !showEmpty {
+				hiddenEmpty++
 				continue
 			}
 			if m.proc.IsWtManager(s.ID) {
@@ -205,7 +214,7 @@ func (m *model) refreshCmd() tea.Cmd {
 			s.Paused = m.proc.IsPaused(s.ID)
 			filtered = append(filtered, s)
 		}
-		return scanResultMsg{sessions: filtered, wtManagerID: wtmID}
+		return scanResultMsg{sessions: filtered, wtManagerID: wtmID, hiddenEmpty: hiddenEmpty}
 	}
 }
 
@@ -226,6 +235,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case scanResultMsg:
 		m.sessions = msg.sessions
 		m.wtManagerID = msg.wtManagerID
+		m.hiddenEmpty = msg.hiddenEmpty
 		if m.selected >= len(m.sessions) {
 			m.selected = len(m.sessions) - 1
 		}

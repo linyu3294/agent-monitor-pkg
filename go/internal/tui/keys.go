@@ -84,6 +84,13 @@ func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			title = "auto-refresh resumed"
 		}
 		return m, m.flashConfirm(title, "")
+	case "e":
+		m.showEmpty = !m.showEmpty
+		title := "hiding worktrees with no chat"
+		if m.showEmpty {
+			title = "showing worktrees with no chat"
+		}
+		return m, tea.Batch(m.flashConfirm(title, ""), m.refreshCmd())
 	case "r":
 		return m.startRemove()
 	case "y":

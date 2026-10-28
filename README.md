@@ -58,6 +58,7 @@ Re-run `install.sh` any time — it's idempotent.
 | `s` | `wt sync` — rebase onto base |
 | `x` | pause / resume the selected agent (`SIGSTOP` / `SIGCONT`) |
 | `p` | pause / resume auto-refresh |
+| `e` | show / hide worktrees with no chat (hidden by default) |
 | `q` / `D` | detach tmux (dashboard keeps running) |
 | `Q` | kill the agent-monitor tmux session |
 | `?` | help modal |

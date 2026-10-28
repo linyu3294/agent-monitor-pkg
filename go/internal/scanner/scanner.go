@@ -23,6 +23,10 @@ import (
 	"github.com/agent-monitor/agent-monitor/internal/session"
 )
 
+// NoSessionID is the placeholder chat id on stub cards for worktrees
+// that have no transcript.
+const NoSessionID = "(no session)"
+
 // Options controls a Scanner instance.
 type Options struct {
 	ProjectsDir   string        // default: $HOME/.cursor/projects
@@ -272,7 +276,7 @@ func (s *Scanner) injectOrphanWorktrees(existing []session.Session) []session.Se
 			projDir := encodedPrimary + "-worktrees-" + encodedSlug
 
 			existing = append(existing, session.Session{
-				ID:             "(no session)",
+				ID:             NoSessionID,
 				ProjectDir:     projDir,
 				Project:        session.ProjectLabel(projDir),
 				WorktreeSlug:   encodedSlug,
