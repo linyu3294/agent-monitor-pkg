@@ -327,20 +327,21 @@ func (m *model) handleConfirmRemoveKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Tombstone the chat id either way so the card disappears on the
-	// next refresh tick. For worktree cards `wt remove` will also drop
-	// the project dir on disk and the next refresh would naturally
-	// stop surfacing it, but the tombstone removes the visual lag
-	// between the keypress and the next scan.
-	m.tombstones[id] = struct{}{}
+	// Tombstone the card so it disappears on the next refresh tick
+	// instead of lingering until `wt remove` finishes. Worktree cards
+	// are keyed by project dir, not chat id: every stub card shares the
+	// "(no session)" id, so an id tombstone would hide all of them.
+	tomb := tombstoneKey(*s)
+	m.tombstones[tomb] = struct{}{}
 
 	label := fmt.Sprintf("killed agent %s", short(id))
 	if hasWorktree {
 		label = fmt.Sprintf("removed worktree '%s' (agent %s killed)", slug, short(id))
 	}
 	return m, tea.Batch(
-		m.runWtCmd(
+		m.runRemoveCmd(
 			label,
+			tomb,
 			func() error {
 				// proctable.Kill returns an error if the chat had no
 				// live process to begin with (idle agent). That's the

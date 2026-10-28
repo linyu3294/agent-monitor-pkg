@@ -78,7 +78,7 @@ type model struct {
 	state    uiState
 	confirm  confirmBar
 	form     newWtForm
-	tombstones map[string]struct{} // chat ids removed via `r` on a primary card
+	tombstones map[string]struct{} // cards removed via `r`, keyed by tombstoneKey
 
 	width  int
 	height int
@@ -111,6 +111,9 @@ type wtResultMsg struct {
 	title    string
 	subtitle string
 	failed   bool
+	// restore, when set on a failed result, is a tombstone key to lift
+	// so the card reappears instead of silently hiding a live worktree.
+	restore string
 }
 
 // New builds an initial model.
@@ -171,6 +174,12 @@ func (m *model) scheduleTick() tea.Cmd {
 //     run multiple agents against the main checkout and remove them
 //     independently with `r`.
 func (m *model) refreshCmd() tea.Cmd {
+	// Snapshot on the Update goroutine: the Cmd runs concurrently with
+	// Update, which mutates m.tombstones.
+	tombstones := make(map[string]struct{}, len(m.tombstones))
+	for k := range m.tombstones {
+		tombstones[k] = struct{}{}
+	}
 	return func() tea.Msg {
 		m.proc.Refresh()
 		raw := m.scanner.Scan()
@@ -178,7 +187,7 @@ func (m *model) refreshCmd() tea.Cmd {
 		filtered := raw[:0]
 		seenWorktree := map[string]bool{}
 		for _, s := range raw {
-			if _, ok := m.tombstones[s.ID]; ok {
+			if _, ok := tombstones[tombstoneKey(s)]; ok {
 				continue
 			}
 			if m.proc.IsWtManager(s.ID) {
@@ -239,6 +248,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case wtResultMsg:
+		if msg.failed && msg.restore != "" {
+			delete(m.tombstones, msg.restore)
+			return m, tea.Batch(m.flashConfirm(msg.title, msg.subtitle), m.refreshCmd())
+		}
 		return m, m.flashConfirm(msg.title, msg.subtitle)
 
 	case tea.KeyMsg:
@@ -300,6 +313,27 @@ func (m *model) runWtCmd(label string, do func() error) tea.Cmd {
 		}
 		return wtResultMsg{title: label, subtitle: ""}
 	}
+}
+
+// runRemoveCmd is runWtCmd for `r`: on failure it lifts the card's
+// tombstone so the still-existing card comes back.
+func (m *model) runRemoveCmd(label, key string, do func() error) tea.Cmd {
+	return func() tea.Msg {
+		if err := do(); err != nil {
+			return wtResultMsg{title: label + " failed", subtitle: err.Error(), failed: true, restore: key}
+		}
+		return wtResultMsg{title: label, subtitle: ""}
+	}
+}
+
+// tombstoneKey identifies a card for `r` removal. Worktree cards are
+// keyed by project dir (one card per worktree, and stub cards share a
+// placeholder id); primary cards by chat id.
+func tombstoneKey(s session.Session) string {
+	if s.WorktreeSlug != "" {
+		return "wt:" + s.ProjectDir
+	}
+	return s.ID
 }
 
 // pbcopy writes <s> to the macOS clipboard. Best effort.
