@@ -1,6 +1,11 @@
 package scanner
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestEncodeForCursor(t *testing.T) {
 	cases := []struct {
@@ -24,5 +29,42 @@ func TestEncodeForCursor(t *testing.T) {
 		if got := EncodeForCursor(c.in); got != c.want {
 			t.Errorf("EncodeForCursor(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestDecodeExistingPath(t *testing.T) {
+	dir, err := filepath.EvalSymlinks("/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(dir, "amnexisting")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	enc := strings.TrimPrefix(root, "/")
+	enc = strings.ReplaceAll(enc, "/", "-")
+	if strings.Contains(strings.TrimPrefix(root, "/"), "-") {
+		t.Skip("temp path contains a hyphen; decode is ambiguous")
+	}
+	if got := DecodeExistingPath(enc); got != root {
+		t.Fatalf("DecodeExistingPath(%q) = %q, want %q", enc, got, root)
+	}
+	if got := DecodeProjectPath(enc); got != "" {
+		t.Fatalf("non-repo decoded as git repo %q", got)
+	}
+}
+
+func TestLatestWorkDir(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chat.jsonl")
+	body := `{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Shell","input":{"command":"ls","working_directory":"/first"}}]}}
+{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Shell","input":{"command":"cd /second && ls"}}]}}
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := LatestWorkDir(path); got != "/second" {
+		t.Fatalf("LatestWorkDir = %q, want /second", got)
 	}
 }

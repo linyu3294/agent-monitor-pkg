@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/agent-monitor/agent-monitor/internal/classifier"
 	"github.com/agent-monitor/agent-monitor/internal/proctable"
@@ -56,10 +56,12 @@ type confirmBar struct {
 
 // newWtForm holds the in-progress fields of the `n` modal.
 type newWtForm struct {
+	repo    textinput.Model
 	branch  textinput.Model
 	base    textinput.Model
 	prompt  textinput.Model
-	focused int // 0=branch, 1=base, 2=prompt
+	focused int // 0=repo, 1=branch, 2=base, 3=prompt
+	err     string
 }
 
 // model is the bubbletea Model for the whole dashboard.
@@ -75,9 +77,9 @@ type model struct {
 	scrollOffset int  // index of the topmost card rendered in the viewport
 	paused       bool // dashboard auto-refresh paused (the `p` hotkey)
 
-	state    uiState
-	confirm  confirmBar
-	form     newWtForm
+	state      uiState
+	confirm    confirmBar
+	form       newWtForm
 	tombstones map[string]struct{} // chat ids removed via `r` on a primary card
 
 	width  int
@@ -119,6 +121,11 @@ func New(opts Options, version string) *model {
 		IdleThreshold: opts.IdleThreshold,
 		MaxCards:      opts.MaxCards,
 	})
+	repo := textinput.New()
+	repo.Prompt = ""
+	repo.Placeholder = "path to git repo"
+	repo.CharLimit = 512
+	repo.Width = 50
 	branch := textinput.New()
 	branch.Prompt = ""
 	branch.CharLimit = 80
@@ -139,6 +146,7 @@ func New(opts Options, version string) *model {
 		wt:      wtbridge.New(),
 		state:   stateList,
 		form: newWtForm{
+			repo:   repo,
 			branch: branch,
 			base:   base,
 			prompt: prompt,

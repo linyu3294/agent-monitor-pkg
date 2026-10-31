@@ -38,11 +38,11 @@ type Scanner struct {
 }
 
 type cacheEntry struct {
-	mtime    int64
-	role     session.Role
-	tool     string
-	text     string
-	cwdHint  string
+	mtime   int64
+	role    session.Role
+	tool    string
+	text    string
+	cwdHint string
 }
 
 // New returns a Scanner with sensible defaults filled in.
@@ -272,12 +272,12 @@ func (s *Scanner) injectOrphanWorktrees(existing []session.Session) []session.Se
 			projDir := encodedPrimary + "-worktrees-" + encodedSlug
 
 			existing = append(existing, session.Session{
-				ID:             "(no session)",
-				ProjectDir:     projDir,
-				Project:        session.ProjectLabel(projDir),
-				WorktreeSlug:   encodedSlug,
-				Mtime:          mtime,
-				State:          session.StateIdle,
+				ID:           "(no session)",
+				ProjectDir:   projDir,
+				Project:      session.ProjectLabel(projDir),
+				WorktreeSlug: encodedSlug,
+				Mtime:        mtime,
+				State:        session.StateIdle,
 			})
 		}
 	}
@@ -374,9 +374,10 @@ func (s *Scanner) parseTail(path string) (session.Role, string, string) {
 
 var cdRegex = regexp.MustCompile(`cd +([^ &;|]+)`)
 
-// parseCWDHint reads the head of a transcript and extracts the first `cd
-// <path>` argument from the first Shell tool_use input. Used as a fallback
-// when the project dir alone doesn't tell us where the worktree lives.
+// parseCWDHint reads the head of a transcript and returns the last shell
+// working directory it can see (`working_directory` on a Shell tool call,
+// otherwise a `cd <path>` in the command). Used as a fallback when the
+// project dir alone doesn't identify a git repo.
 func parseCWDHint(path string) string {
 	f, err := os.Open(path)
 	if err != nil {
@@ -390,41 +391,93 @@ func parseCWDHint(path string) string {
 	if n <= 0 {
 		return ""
 	}
-	scn := bufio.NewScanner(bytes.NewReader(buf[:n]))
-	scn.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scn.Scan() {
-		line := bytes.TrimSpace(scn.Bytes())
-		if len(line) == 0 || line[0] != '{' {
-			continue
-		}
-		var entry struct {
-			Role    string `json:"role"`
-			Message struct {
-				Content []struct {
-					Type  string `json:"type"`
-					Name  string `json:"name"`
-					Input struct {
-						Command string `json:"command"`
-					} `json:"input"`
-				} `json:"content"`
-			} `json:"message"`
-		}
-		if err := json.Unmarshal(line, &entry); err != nil {
-			continue
-		}
-		if entry.Role != "assistant" {
-			continue
-		}
-		for _, c := range entry.Message.Content {
-			if c.Type != "tool_use" || c.Name != "Shell" {
-				continue
-			}
-			if m := cdRegex.FindStringSubmatch(c.Input.Command); len(m) >= 2 {
-				return m[1]
-			}
+	return lastWorkDir(buf[:n])
+}
+
+// LatestWorkDir returns the most recent shell working directory in the
+// tail of a transcript. The head-only hint misses sessions whose first
+// commands have no cwd and whose later ones do.
+func LatestWorkDir(transcriptPath string) string {
+	if transcriptPath == "" {
+		return ""
+	}
+	f, err := os.Open(transcriptPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	const tail = 512 * 1024
+	size := info.Size()
+	read := int64(tail)
+	if read > size {
+		read = size
+	}
+	if read <= 0 {
+		return ""
+	}
+	buf := make([]byte, read)
+	if _, err := f.ReadAt(buf, size-read); err != nil {
+		return ""
+	}
+	// Drop a partial first line when we started mid-file.
+	if size > read {
+		if i := bytes.IndexByte(buf, '\n'); i >= 0 {
+			buf = buf[i+1:]
 		}
 	}
-	return ""
+	return lastWorkDir(buf)
+}
+
+func lastWorkDir(buf []byte) string {
+	var last string
+	scn := bufio.NewScanner(bytes.NewReader(buf))
+	scn.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scn.Scan() {
+		if wd := workDirFromLine(scn.Bytes()); wd != "" {
+			last = wd
+		}
+	}
+	return last
+}
+
+func workDirFromLine(line []byte) string {
+	line = bytes.TrimSpace(line)
+	if len(line) == 0 || line[0] != '{' {
+		return ""
+	}
+	var entry struct {
+		Message struct {
+			Content []struct {
+				Type  string `json:"type"`
+				Name  string `json:"name"`
+				Input struct {
+					Command          string `json:"command"`
+					WorkingDirectory string `json:"working_directory"`
+				} `json:"input"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(line, &entry); err != nil {
+		return ""
+	}
+	var found string
+	for _, c := range entry.Message.Content {
+		if c.Type != "tool_use" || c.Name != "Shell" {
+			continue
+		}
+		if wd := strings.TrimSpace(c.Input.WorkingDirectory); wd != "" {
+			found = wd
+			continue
+		}
+		if m := cdRegex.FindStringSubmatch(c.Input.Command); len(m) >= 2 {
+			found = m[1]
+		}
+	}
+	return found
 }
 
 // worktreeSlugFor decodes the worktree slug embedded in a project-dir
@@ -474,6 +527,50 @@ func DecodeProjectPath(projectDir string) string {
 		}
 	}
 	return ""
+}
+
+// DecodeExistingPath decodes a project-dir basename to an absolute
+// directory that exists on disk, even when that directory is not a git
+// repo. DecodeProjectPath refuses non-repos, which makes `n` fail for a
+// Cursor workspace opened on a parent folder such as ~/Documents.
+func DecodeExistingPath(projectDir string) string {
+	enc := projectDir
+	if i := strings.Index(enc, "__worktrees__"); i >= 0 {
+		enc = enc[:i]
+	}
+	if p := decodeExisting(enc); p != "" {
+		return p
+	}
+	if i := strings.LastIndex(enc, "-worktrees-"); i >= 0 {
+		if p := decodeExisting(enc[:i]); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+func decodeExisting(enc string) string {
+	if enc == "" {
+		return ""
+	}
+	candidate := "/" + strings.ReplaceAll(enc, "-", "/")
+	if isDir(candidate) {
+		return candidate
+	}
+	attempt := candidate
+	for strings.Contains(attempt, "/") {
+		idx := strings.LastIndex(attempt, "/")
+		attempt = attempt[:idx] + "-" + attempt[idx+1:]
+		if isDir(attempt) {
+			return attempt
+		}
+	}
+	return ""
+}
+
+func isDir(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
 }
 
 func decodeWalk(enc string) string {

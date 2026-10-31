@@ -6,11 +6,12 @@ import (
 	"os/exec"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/agent-monitor/agent-monitor/internal/scanner"
 	"github.com/agent-monitor/agent-monitor/internal/session"
+	"github.com/agent-monitor/agent-monitor/internal/wtbridge"
 )
 
 // handleKey routes a keypress based on the current modal state.
@@ -154,7 +155,7 @@ func (m *model) handleFollow() (tea.Model, tea.Cmd) {
 			if err != nil {
 				return err
 			}
-			return openIterm("", fmt.Sprintf("%s follow %s", am, id))
+			return wtbridge.OpenITerm("", fmt.Sprintf("%s follow %s", am, id))
 		},
 	)
 }
@@ -363,13 +364,54 @@ func (m *model) handleConfirmRemoveKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // openNewWt enters the new-worktree modal.
 func (m *model) openNewWt() (tea.Model, tea.Cmd) {
 	m.state = stateNewWt
+	m.form.err = ""
+	repo := ""
+	if s := m.selectedSession(); s != nil {
+		repo = m.inferRepo(s)
+	}
+	m.form.repo.SetValue(repo)
 	m.form.branch.SetValue("")
 	m.form.prompt.SetValue("")
-	m.form.focused = 0
-	m.form.branch.Focus()
+	m.form.repo.Blur()
+	m.form.branch.Blur()
 	m.form.base.Blur()
 	m.form.prompt.Blur()
+	// Workspace folders like ~/Documents are not git repos. When we can
+	// still infer one, leave the cursor on branch so typing works the
+	// same as before. Otherwise focus repo so the missing path is obvious.
+	if strings.TrimSpace(repo) == "" {
+		m.form.focused = 0
+		m.form.repo.Focus()
+	} else {
+		m.form.focused = 1
+		m.form.branch.Focus()
+	}
 	return m, textinput.Blink
+}
+
+// inferRepo picks the git primary the new worktree should be created from.
+// A selected card whose workspace is not itself a repo (the usual case for
+// a Cursor window opened on ~/Documents) used to bail out with
+// "no repo could be inferred". Fall back to the agent's latest shell cwd.
+func (m *model) inferRepo(s *session.Session) string {
+	if s == nil {
+		return ""
+	}
+	candidates := []string{
+		scanner.DecodeProjectPath(s.ProjectDir),
+		scanner.LatestWorkDir(s.TranscriptPath),
+		s.CWDHint,
+		scanner.DecodeExistingPath(s.ProjectDir),
+	}
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		if top := wtbridge.GitPrimary(c); top != "" {
+			return top
+		}
+	}
+	return ""
 }
 
 // handleNewWtKey routes keys while the new-worktree modal is up.
@@ -386,59 +428,72 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cycleNewWtFocus(-1)
 		return m, nil
 	case "enter":
+		repo := strings.TrimSpace(m.form.repo.Value())
 		branch := strings.TrimSpace(m.form.branch.Value())
 		base := strings.TrimSpace(m.form.base.Value())
 		prompt := m.form.prompt.Value()
+		if repo == "" {
+			m.form.err = "repo path is required — this workspace is not a git repo"
+			m.focusNewWt(0)
+			return m, nil
+		}
 		if branch == "" {
-			m.state = stateList
-			return m, m.flashConfirm("new worktree cancelled", "(empty branch)")
+			m.form.err = "branch is required"
+			m.focusNewWt(1)
+			return m, nil
+		}
+		top := wtbridge.GitPrimary(repo)
+		if top == "" {
+			m.form.err = "not a git repo: " + repo
+			m.focusNewWt(0)
+			return m, nil
 		}
 		if base == "" {
 			base = "origin/main"
 		}
-		s := m.selectedSession()
-		repo := ""
-		if s != nil {
-			if p := scanner.DecodeProjectPath(s.ProjectDir); p != "" {
-				repo = p
-			}
-		}
-		if repo == "" {
-			m.state = stateList
-			return m, m.flashConfirm("new worktree failed", "no repo could be inferred")
-		}
+		m.form.err = ""
 		m.state = stateList
 		return m, m.runWtCmd(
 			fmt.Sprintf("created worktree %s", branch),
-			func() error { return m.wt.Create(repo, branch, base, prompt) },
+			func() error { return m.wt.Create(top, branch, base, prompt) },
 		)
 	}
 	// Pass to the focused field.
+	m.form.err = ""
 	var cmd tea.Cmd
 	switch m.form.focused {
 	case 0:
-		m.form.branch, cmd = m.form.branch.Update(msg)
+		m.form.repo, cmd = m.form.repo.Update(msg)
 	case 1:
-		m.form.base, cmd = m.form.base.Update(msg)
+		m.form.branch, cmd = m.form.branch.Update(msg)
 	case 2:
+		m.form.base, cmd = m.form.base.Update(msg)
+	case 3:
 		m.form.prompt, cmd = m.form.prompt.Update(msg)
 	}
 	return m, cmd
 }
 
-func (m *model) cycleNewWtFocus(delta int) {
-	m.form.focused = (m.form.focused + delta + 3) % 3
+func (m *model) focusNewWt(idx int) {
+	m.form.focused = idx
+	m.form.repo.Blur()
 	m.form.branch.Blur()
 	m.form.base.Blur()
 	m.form.prompt.Blur()
-	switch m.form.focused {
+	switch idx {
 	case 0:
-		m.form.branch.Focus()
+		m.form.repo.Focus()
 	case 1:
-		m.form.base.Focus()
+		m.form.branch.Focus()
 	case 2:
+		m.form.base.Focus()
+	case 3:
 		m.form.prompt.Focus()
 	}
+}
+
+func (m *model) cycleNewWtFocus(delta int) {
+	m.focusNewWt((m.form.focused + delta + 4) % 4)
 }
 
 // short returns the first 8 chars of a UUID for compact status messages.
@@ -456,34 +511,6 @@ func tmuxSendKeys(target, text string) error {
 		return err
 	}
 	return nil
-}
-
-// openIterm spawns a new iTerm2 tab cd'ing into <cwd> and running <cmd>.
-// Best-effort — returns an AppleScript error verbatim if iTerm refuses.
-func openIterm(cwd, cmd string) error {
-	if cwd == "" {
-		cwd = "$HOME"
-	}
-	full := "cd " + shellQuote(cwd) + " && " + cmd
-	asLine := strings.ReplaceAll(full, `\`, `\\`)
-	asLine = strings.ReplaceAll(asLine, `"`, `\"`)
-	script := fmt.Sprintf(`tell application "iTerm"
-  activate
-  if (count of windows) = 0 then
-    set newWindow to (create window with default profile)
-    tell current session of newWindow to write text "%s"
-  else
-    tell current window
-      set newTab to (create tab with default profile)
-    end tell
-    tell current session of newTab to write text "%s"
-  end if
-end tell`, asLine, asLine)
-	return exec.Command("osascript", "-e", script).Run()
-}
-
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // Compile-time safety: ensure the session import is used (some build

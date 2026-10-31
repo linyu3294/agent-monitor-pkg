@@ -15,15 +15,15 @@ import (
 // via lipgloss's color profile detection (same mechanism that already
 // lets `colorPink` work as the modal border).
 var (
-	colorPink       = lipgloss.Color("#FF10F0") // neon pink — modal frame, header title, ▶ caret
-	colorPinkSoft   = lipgloss.Color("#FF79C6") // softer pink — paused state
-	colorPurple     = lipgloss.Color("#BD93F9") // bright purple — accent borders, thinking state, footer
-	colorPurpleDim  = lipgloss.Color("#6272A4") // dim purple — card content border, secondary chrome
-	colorGreen      = lipgloss.Color("#7FE3C4") // mint — active state, chat ids (matches tmux status bar)
-	colorYellow     = lipgloss.Color("#F1FA8C") // sand yellow — confirm bar (warning, not danger)
-	colorRed        = lipgloss.Color("#FF5555") // soft red — confirm bar errors
-	colorGrey       = lipgloss.Color("245")     // unchanged neutral grey for idle
-	colorGreyDim    = lipgloss.Color("8")       // unchanged terminal-default dim
+	colorPink      = lipgloss.Color("#FF10F0") // neon pink — modal frame, header title, ▶ caret
+	colorPinkSoft  = lipgloss.Color("#FF79C6") // softer pink — paused state
+	colorPurple    = lipgloss.Color("#BD93F9") // bright purple — accent borders, thinking state, footer
+	colorPurpleDim = lipgloss.Color("#6272A4") // dim purple — card content border, secondary chrome
+	colorGreen     = lipgloss.Color("#7FE3C4") // mint — active state, chat ids (matches tmux status bar)
+	colorYellow    = lipgloss.Color("#F1FA8C") // sand yellow — confirm bar (warning, not danger)
+	colorRed       = lipgloss.Color("#FF5555") // soft red — confirm bar errors
+	colorGrey      = lipgloss.Color("245")     // unchanged neutral grey for idle
+	colorGreyDim   = lipgloss.Color("8")       // unchanged terminal-default dim
 )
 
 // styleTable holds every reusable lipgloss style. Initialized once;
@@ -35,9 +35,9 @@ var (
 	styleDim      = lipgloss.NewStyle().Foreground(colorGreyDim)
 	styleSel      = lipgloss.NewStyle().Foreground(colorPink).Bold(true)
 
-	styleStateActive   = lipgloss.NewStyle().Foreground(colorGreen).Bold(true) // neon green
-	styleStateThinking = lipgloss.NewStyle().Foreground(colorPurple).Bold(true) // purple (was yellow)
-	styleStateIdle     = lipgloss.NewStyle().Foreground(colorGrey)              // grey, unchanged
+	styleStateActive   = lipgloss.NewStyle().Foreground(colorGreen).Bold(true)    // neon green
+	styleStateThinking = lipgloss.NewStyle().Foreground(colorPurple).Bold(true)   // purple (was yellow)
+	styleStateIdle     = lipgloss.NewStyle().Foreground(colorGrey)                // grey, unchanged
 	stylePaused        = lipgloss.NewStyle().Foreground(colorPinkSoft).Bold(true) // soft pink
 
 	// Card borders: title row gets the brighter accent so each card's
@@ -63,10 +63,10 @@ var (
 	// Neon-pink rounded border used to frame full-screen modals (help,
 	// new-worktree). Same hex as the header title for visual consistency.
 	styleModalBorder = colorPink
-	styleModal = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(styleModalBorder).
-			Padding(1, 2)
+	styleModal       = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(styleModalBorder).
+				Padding(1, 2)
 )
 
 func styleForState(state session.State) lipgloss.Style {
@@ -404,7 +404,7 @@ Multi-agent
   i    open nvim + Diffview (worktree only)
 
 Worktree lifecycle
-  n    new worktree (branch / base / prompt)
+  n    new worktree (repo / branch / base / prompt)
   r    remove selected (y/N confirm)
   s    wt sync (rebase onto base)
 
@@ -433,11 +433,17 @@ func (m *model) viewNewWt() string {
 	b.WriteString("\n")
 	b.WriteString(styleDim.Render("Esc to cancel · Tab to cycle · Enter to confirm"))
 	b.WriteString("\n\n")
+	b.WriteString("repo:   " + m.form.repo.View() + "\n")
 	b.WriteString("branch: " + m.form.branch.View() + "\n")
 	b.WriteString("base:   " + m.form.base.View() + "\n")
 	b.WriteString("prompt: " + m.form.prompt.View() + "\n")
+	if m.form.err != "" {
+		b.WriteString("\n")
+		b.WriteString(styleConfirmErr.Render(m.form.err))
+		b.WriteString("\n")
+	}
 	b.WriteString("\n")
-	b.WriteString(styleDim.Render("base defaults to origin/main · prompt is sent to cursor-agent on launch"))
+	b.WriteString(styleDim.Render("repo is the git checkout · base defaults to origin/main · prompt is sent to cursor-agent"))
 	return m.centerInModal(b.String())
 }
 

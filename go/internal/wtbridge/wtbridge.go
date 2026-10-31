@@ -1,13 +1,14 @@
 // Package wtbridge is the sole point of contact between the dashboard
 // and the worktrees skill's `wt` CLI.
 //
-// We shell out rather than re-implement worktree management because (a)
-// `wt` is the canonical source of truth for worktree state on this
-// machine, and (b) shelling out keeps `agent-monitor` agnostic to `wt`'s
-// internal layout — schema changes there don't break us.
+// We shell out to `wt` when it is installed, because it is the canonical
+// source of truth for worktree state on this machine. Create falls back
+// to `git worktree` under `<repo>/.worktrees/` when `wt` is absent, which
+// is the same layout the dashboard already scans.
 package wtbridge
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -51,17 +52,121 @@ func (b *Bridge) Resume(id, cwd string) error {
 }
 
 // Create spawns a new worktree at <branch> based on <base> and opens an
-// iTerm tab + IDE tab via `wt create --iterm --yolo`. <prompt> may be
-// empty.
+// iTerm tab running cursor-agent. When the wt CLI is installed this shells
+// out to `wt create --iterm --yolo`. Otherwise it creates
+// `<repo>/.worktrees/<slug>` with git directly — the layout the dashboard
+// already scans — so `n` still works on machines without the worktrees skill.
+// <prompt> may be empty.
 func (b *Bridge) Create(repo, branch, base, prompt string) error {
-	if !b.Available() {
-		return errors.New("wt binary unavailable")
+	if b.Available() {
+		args := []string{"create", branch, "--base", base, "--iterm", "--yolo"}
+		if prompt != "" {
+			args = append(args, "--prompt", prompt)
+		}
+		return runIn(repo, b.bin, args...)
 	}
-	args := []string{"create", branch, "--base", base, "--iterm", "--yolo"}
-	if prompt != "" {
-		args = append(args, "--prompt", prompt)
+	return createWithGit(repo, branch, base, prompt)
+}
+
+// GitPrimary returns the main checkout for the git repo containing dir.
+// Worktree directories resolve to the primary repo, not the linked tree.
+// Returns "" when dir is not inside a git repo.
+func GitPrimary(dir string) string {
+	if strings.TrimSpace(dir) == "" {
+		return ""
 	}
-	return runIn(repo, b.bin, args...)
+	topOut, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return ""
+	}
+	top := strings.TrimSpace(string(topOut))
+	commonOut, err := exec.Command("git", "-C", dir, "rev-parse", "--git-common-dir").Output()
+	if err != nil {
+		return top
+	}
+	common := strings.TrimSpace(string(commonOut))
+	if !filepath.IsAbs(common) {
+		return top
+	}
+	return filepath.Dir(common)
+}
+
+func createWithGit(repo, branch, base, prompt string) error {
+	top := GitPrimary(repo)
+	if top == "" {
+		return fmt.Errorf("not a git repo: %s", repo)
+	}
+	slug := slugFromBranch(branch)
+	dest := filepath.Join(top, ".worktrees", slug)
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	out, err := runGit(top, "worktree", "add", "-b", branch, dest, base)
+	if err != nil && bytes.Contains(out, []byte("branch named")) && bytes.Contains(out, []byte("already exists")) {
+		out, err = runGit(top, "worktree", "add", dest, branch)
+	}
+	if err != nil {
+		msg := firstLine(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("%s", msg)
+	}
+	if os.Getenv("WT_NO_OPEN") == "1" {
+		return nil
+	}
+	cmd := "cursor-agent --yolo"
+	if strings.TrimSpace(prompt) != "" {
+		cmd += " -- " + shellQuote(prompt)
+	}
+	if err := OpenITerm(dest, cmd); err != nil {
+		return fmt.Errorf("worktree created at %s, but opening iTerm failed: %w", dest, err)
+	}
+	return nil
+}
+
+func slugFromBranch(branch string) string {
+	s := strings.TrimSpace(branch)
+	s = strings.ReplaceAll(s, "/", "-")
+	s = strings.ReplaceAll(s, " ", "-")
+	if s == "" || s == "." || s == ".." {
+		return "worktree"
+	}
+	return s
+}
+
+func runGit(dir string, args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	return cmd.CombinedOutput()
+}
+
+// OpenITerm spawns a new iTerm2 tab cd'ing into cwd and running cmd.
+// Best-effort — returns an AppleScript error verbatim if iTerm refuses.
+func OpenITerm(cwd, cmd string) error {
+	if cwd == "" {
+		cwd = "$HOME"
+	}
+	full := "cd " + shellQuote(cwd) + " && " + cmd
+	asLine := strings.ReplaceAll(full, `\`, `\\`)
+	asLine = strings.ReplaceAll(asLine, `"`, `\"`)
+	script := fmt.Sprintf(`tell application "iTerm"
+  activate
+  if (count of windows) = 0 then
+    set newWindow to (create window with default profile)
+    tell current session of newWindow to write text "%s"
+  else
+    tell current window
+      set newTab to (create tab with default profile)
+    end tell
+    tell current session of newTab to write text "%s"
+  end if
+end tell`, asLine, asLine)
+	return exec.Command("osascript", "-e", script).Run()
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // Remove deletes the named worktree (and its branch) via `wt remove`.
