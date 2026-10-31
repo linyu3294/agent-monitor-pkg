@@ -7,6 +7,23 @@ import (
 	"testing"
 )
 
+func TestExpandUserPath(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := expandUserPath("~/Documents/credit-platform/")
+	want := filepath.Join(home, "Documents", "credit-platform")
+	if got != want {
+		t.Fatalf("expandUserPath = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(want); err == nil {
+		if primary := GitPrimary("~/Documents/credit-platform/"); primary == "" {
+			t.Fatal("GitPrimary rejected ~/Documents/credit-platform/")
+		}
+	}
+}
+
 func TestCreateWithoutWt(t *testing.T) {
 	repo := initRepo(t)
 	t.Setenv("WT_NO_OPEN", "1")

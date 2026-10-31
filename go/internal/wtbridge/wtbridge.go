@@ -72,7 +72,8 @@ func (b *Bridge) Create(repo, branch, base, prompt string) error {
 // Worktree directories resolve to the primary repo, not the linked tree.
 // Returns "" when dir is not inside a git repo.
 func GitPrimary(dir string) string {
-	if strings.TrimSpace(dir) == "" {
+	dir = expandUserPath(dir)
+	if dir == "" {
 		return ""
 	}
 	topOut, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output()
@@ -89,6 +90,27 @@ func GitPrimary(dir string) string {
 		return top
 	}
 	return filepath.Dir(common)
+}
+
+// expandUserPath turns a typed repo path into an absolute path. The modal
+// accepts "~/Documents/credit-platform/", but git does not expand ~.
+func expandUserPath(dir string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return ""
+	}
+	if dir == "~" || strings.HasPrefix(dir, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return ""
+		}
+		if dir == "~" {
+			dir = home
+		} else {
+			dir = filepath.Join(home, dir[2:])
+		}
+	}
+	return filepath.Clean(dir)
 }
 
 func createWithGit(repo, branch, base, prompt string) error {
