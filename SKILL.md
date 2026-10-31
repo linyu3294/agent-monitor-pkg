@@ -69,6 +69,7 @@ Press `?` for the full help modal grouped by category. Hotkeys only fire when th
 | | `s` | `wt sync` |
 | Agent control | `x` | pause / resume the selected agent (SIGSTOP / SIGCONT) |
 | Dashboard | `p` | pause / resume auto-refresh |
+| | `e` | show / hide worktrees with no chat (hidden by default) |
 | | `q` / `D` | detach tmux |
 | | `Q` | kill agent-monitor tmux session |
 | | `?` | help modal |
@@ -84,7 +85,7 @@ All pane-switching bindings live in a session-scoped `agent-monitor-root` key ta
 
 ### Card model
 
-Each worktree gets exactly one card (the most-recent agent for that worktree wins; older chats on the same worktree are hidden). Worktree cards are pinned — they always surface regardless of `AM_IDLE_THRESHOLD_MIN`, since the worktree itself is the unit of interest. Primary-checkout sessions surface as individual cards and age out at the idle threshold; `r` kills+drops them.
+Each worktree gets exactly one card (the most-recent agent for that worktree wins; older chats on the same worktree are hidden). Worktree cards are pinned — they always surface regardless of `AM_IDLE_THRESHOLD_MIN`, since the worktree itself is the unit of interest. Worktrees with no chat at all get a `(no session)` stub card, hidden by default; press `e` to show them (the header shows how many are hidden). Primary-checkout sessions surface as individual cards and age out at the idle threshold; `r` kills+drops them.
 
 ## State classification (the bug fix)
 

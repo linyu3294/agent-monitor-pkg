@@ -111,6 +111,9 @@ func (m *model) viewList() string {
 	const headerRightPad = "  "
 	left := styleHeader.Render("agent-monitor")
 	right := fmt.Sprintf("%s  ·  %d sessions", time.Now().Format("15:04:05"), len(m.sessions))
+	if m.hiddenEmpty > 0 {
+		right += fmt.Sprintf("  ·  %d empty worktrees hidden [e]", m.hiddenEmpty)
+	}
 	if m.paused {
 		right = "[PAUSED]  " + right
 	}
@@ -413,6 +416,7 @@ Agent control
 
 Dashboard
   p    pause / resume auto-refresh
+  e    show / hide worktrees with no chat
   q/D  detach tmux
   Q    kill session
   ?    this help

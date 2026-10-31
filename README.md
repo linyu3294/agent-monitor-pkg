@@ -1,3 +1,12 @@
+
+
+
+<img width="1709" height="1013" alt="Screenshot 2026-07-31 at 11 29 41 AM" src="https://github.com/user-attachments/assets/609617ef-2810-4d68-a6ce-b9c44717d68b" />
+
+
+
+
+
 # agent-monitor
 
 Live dashboard for every Cursor agent session running on your machine. Single-pane TUI plus a tmux-hosted worktree-manager pane — see every agent at once, follow one live, take over a chat in a fresh iTerm tab, spin up new worktrees, all in one keystroke.
@@ -49,6 +58,7 @@ Re-run `install.sh` any time — it's idempotent.
 | `s` | `wt sync` — rebase onto base |
 | `x` | pause / resume the selected agent (`SIGSTOP` / `SIGCONT`) |
 | `p` | pause / resume auto-refresh |
+| `e` | show / hide worktrees with no chat (hidden by default) |
 | `q` / `D` | detach tmux (dashboard keeps running) |
 | `Q` | kill the agent-monitor tmux session |
 | `?` | help modal |

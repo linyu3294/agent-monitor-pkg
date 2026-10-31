@@ -10,7 +10,8 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-14
+    # Pure-Go (CGO_ENABLED=0) cross-compile; macOS runners aren't needed.
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         arch: [arm64, amd64]
