@@ -139,6 +139,14 @@ func (m *model) handleResume() (tea.Model, tea.Cmd) {
 		return m, m.flashConfirm("can't resolve workspace path", "")
 	}
 	id := s.ID
+	if s.Source == session.SourceCodewhale {
+		// `wt resume` hardcodes cursor-agent; a Codewhale card resumes
+		// through its own CLI, in the same workspace.
+		return m, m.runWtCmd(
+			fmt.Sprintf("resumed %s in new iTerm tab", short(id)),
+			func() error { return wtbridge.OpenITerm(cwd, "codewhale resume "+id) },
+		)
+	}
 	return m, m.runWtCmd(
 		fmt.Sprintf("resumed %s in new iTerm tab", short(id)),
 		func() error { return m.wt.Resume(id, cwd) },
@@ -152,6 +160,12 @@ func (m *model) handleFollow() (tea.Model, tea.Cmd) {
 	s := m.selectedSession()
 	if s == nil {
 		return m, nil
+	}
+	if s.Source == session.SourceCodewhale {
+		return m, m.flashConfirm(
+			"follow tails Cursor transcripts only",
+			"press 'a' to resume this Codewhale session in a new tab",
+		)
 	}
 	id := s.ID
 	return m, m.runWtCmd(
@@ -178,7 +192,7 @@ func (m *model) handlePauseToggle() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if !m.proc.IsLive(s.ID) {
-		return m, m.flashConfirm("no live cursor-agent process for this chat", "(already exited?)")
+		return m, m.flashConfirm("no live agent process for this session", "(already exited?)")
 	}
 	id := s.ID
 	wasPaused := m.proc.IsPaused(id)

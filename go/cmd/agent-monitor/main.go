@@ -13,6 +13,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -28,6 +30,7 @@ var version = "dev"
 
 func main() {
 	listMode := flag.Bool("list", false, "print active sessions as plain text and exit")
+	explain := flag.String("explain", "", "explain how a Codewhale session's workspace was resolved, then exit")
 	selfTest := flag.Bool("self-test", false, "run an internal smoke test and exit")
 	profile := flag.Bool("profile", false, "run a 5-tick benchmark and exit")
 	versionFlag := flag.Bool("version", false, "print version and exit")
@@ -39,6 +42,9 @@ func main() {
 	switch {
 	case *versionFlag:
 		fmt.Println(version)
+		return
+	case *explain != "":
+		runExplain(*explain)
 		return
 	case *selfTest:
 		runSelfTest(*idleMin, *maxCards)
@@ -63,6 +69,96 @@ func main() {
 	}
 }
 
+// resolveSessionLog maps an operator-supplied identifier to a session
+// log. Accepts an absolute path, a store-relative filename, a full UUID,
+// or the short id that `codewhale sessions` prints — the last is what a
+// person actually pastes, so it must work.
+func resolveSessionLog(dir, id string) string {
+	switch {
+	case filepath.IsAbs(id):
+		return id
+	}
+	name := id
+	if !strings.HasSuffix(name, ".json") {
+		name += ".json"
+	}
+	exact := filepath.Join(dir, name)
+	if _, err := os.Stat(exact); err == nil {
+		return exact
+	}
+	// Short-id form: `caa88777`. Refuse to guess when the prefix is
+	// ambiguous rather than silently explaining the wrong log.
+	matches, err := filepath.Glob(filepath.Join(dir, strings.TrimSuffix(name, ".json")+"*.json"))
+	if err != nil || len(matches) != 1 {
+		return exact
+	}
+	return matches[0]
+}
+
+func runExplain(id string) {
+	dir := os.Getenv("AM_CODEWHALE_DIR")
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, ".codewhale", "sessions")
+	}
+	path := resolveSessionLog(dir, id)
+	if _, err := os.Stat(path); err != nil {
+		fmt.Printf("session:  %s\n", id)
+		fmt.Printf("error:    no session log at %s\n", path)
+		fmt.Printf("hint:     `codewhale sessions` lists saved ids; pass any prefix of one\n")
+		return
+	}
+	ev := scanner.ExplainCodewhale(path, strings.TrimSuffix(filepath.Base(path), ".json"))
+	fmt.Printf("session:  %s\n", ev.ID)
+	fmt.Printf("log:      %s\n", ev.Path)
+	fmt.Printf("size:     %d bytes\n", ev.Size)
+	if ev.Cwd == "" {
+		fmt.Printf("workspace: (unresolved) — neither window yielded an existing directory\n")
+		return
+	}
+	fmt.Printf("window:   %s (head=%d KB, tail=%d KB)\n", ev.Window, 512, 64)
+	fmt.Printf("signal:   %s\n", ev.Signal)
+	if ev.Key != "" {
+		fmt.Printf("key:      %s\n", ev.Key)
+	}
+	fmt.Printf("workspace: %s\n", ev.Cwd)
+	fmt.Printf("project:  %s\n", ev.Project)
+	if ev.Signal == "frequent path" {
+		fmt.Printf("note:     inferred from path frequency, not stated by the log — verify above\n")
+	}
+	if len(ev.Candidates) > 0 {
+		fmt.Printf("candidates:\n")
+		for _, c := range ev.Candidates {
+			fmt.Printf("  %5d  %s\n", c.Count, c.Path)
+		}
+	}
+	fmt.Printf("last turn:\n")
+	fmt.Printf("  role:   %s\n", ev.LastRole)
+	if ev.ScannedTail > 0 {
+		fmt.Printf("  scanned: %d bytes backwards\n", ev.ScannedTail)
+	}
+	if ev.LastTool != "" {
+		fmt.Printf("  tool:   %s\n", ev.LastTool)
+	}
+	if ev.LastText != "" {
+		fmt.Printf("  text:   %q\n", truncate(ev.LastText, 100))
+	}
+	if len(ev.Shapes) > 0 {
+		fmt.Printf("record shapes (newest first, keys only):\n")
+		for _, s := range ev.Shapes {
+			fmt.Printf("  %s\n", s)
+		}
+	}
+}
+
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
 func runList(idleMin, maxCards int) {
 	scn := scanner.New(scanner.Options{
 		IdleThreshold: time.Duration(idleMin) * time.Minute,
@@ -71,18 +167,19 @@ func runList(idleMin, maxCards int) {
 	tbl := proctable.New()
 	tbl.Refresh()
 	sessions := scn.Scan()
-	fmt.Printf("%-36s  %-9s  %-30s  %s\n", "CHAT-ID", "STATE", "PROJECT", "WORKTREE")
-	fmt.Println("------------------------------------------------------------------------------------------")
+	fmt.Printf("%-36s  %-10s  %-7s  %-9s  %-30s  %s\n", "CHAT-ID", "SOURCE", "PID", "STATE", "PROJECT", "WORKTREE")
+	fmt.Println("------------------------------------------------------------------------------------------------------------------------")
 	for _, s := range sessions {
 		if tbl.IsWtManager(s.ID) {
 			continue
 		}
 		s.State = classifier.Classify(s, tbl)
+		s.PID = tbl.PID(s.ID)
 		wt := s.WorktreeSlug
 		if wt == "" {
 			wt = "(primary)"
 		}
-		fmt.Printf("%-36s  %-9s  %-30s  %s\n", s.ID, s.State, s.Project, wt)
+		fmt.Printf("%-36s  %-10s  %-7d  %-9s  %-30s  %s\n", s.ID, s.AgentLabel(), s.PID, s.State, s.Project, wt)
 	}
 }
 

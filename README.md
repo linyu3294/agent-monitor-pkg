@@ -64,16 +64,30 @@ Re-run `install.sh` any time — it's idempotent.
 | `?` | help modal |
 | `F2` / `F3`, `M-Tab` | switch panes (session-scoped, never leaks to other tmux sessions) |
 
+`n` opens a new worktree and launches the chosen CLI in the tab. When `codewhale`
+is on `PATH` the agent field defaults to it, so the common case needs no extra
+keystroke; `←` / `→` switch to `cursor-agent`. Codewhale is launched unattended —
+`--approval-policy never --sandbox-mode workspace-write` — so it works in its own
+worktree without stopping for approvals, while the sandbox keeps it out of the
+rest of the machine.
+
 ## What it watches
 
-Cursor stores transcripts as JSONL under `~/.cursor/projects/<encoded>/agent-transcripts/<chatId>/<chatId>.jsonl`. Each tick the dashboard:
+**Cursor.** Transcripts are JSONL under `~/.cursor/projects/<encoded>/agent-transcripts/<chatId>/<chatId>.jsonl`.
 
-1. Walks the projects dir (one syscall pass).
-2. Tails the last ~8 KB of each transcript whose mtime advanced (mtime cache + bounded read).
-3. Runs one `ps` and one bulk `lsof` to map chat ids to live `cursor-agent` processes.
+**Codewhale.** Session logs are JSONL under `~/.codewhale/sessions/<uuid>.json` (override the
+directory with `AM_CODEWHALE_DIR`). Each tick the dashboard:
+
+1. Walks both stores (one syscall pass each).
+2. Reads a bounded head + tail of each log whose mtime advanced (mtime cache; Cursor: 8 KB tail, Codewhale: 512 KB head for the workspace and 64 KB tail for the last turn).
+3. Runs one `ps` and one bulk `lsof` to map sessions to live processes: Cursor through its open `store.db`, Codewhale through its open session log.
 4. Classifies each card by **content** (last JSONL entry shape), not just by clock.
 
-This is a fully read-only view of the agent runtime — the dashboard never opens a transcript in full, never touches `cursor-agent`'s sockets, and never blocks on I/O. `cursor-agent` workers detach from their parent terminal, so closing the terminal that started one doesn't kill it; `am` just gives you visibility back from any new terminal.
+The workspace for a Codewhale card is read from the log's own metadata when it states one, and otherwise inferred from any absolute path in the log that exists on disk — preferring a git checkout. A card whose workspace can't be established shows `(unknown workspace)` rather than a guess.
+
+This is a fully read-only view of the agent runtime — the dashboard never opens a log in full, never touches an agent's sockets, and never blocks on I/O. Agents detach from their parent terminal, so closing the terminal that started one doesn't kill it; `am` just gives you visibility back from any new terminal.
+
+A card's `cmd:` row names the CLI that resumes it (`cursor-agent --resume <id>` or `codewhale resume <id>`), and `am list` reports that `SOURCE` per row. `f` (follow) is Cursor-only; on a Codewhale card it points you at `a` instead of tailing the wrong file.
 
 ## Subcommands
 
@@ -81,7 +95,7 @@ This is a fully read-only view of the agent runtime — the dashboard never open
 am                start or attach the dashboard
 am attach         attach an existing session (error if none)
 am detach         detach current tmux client
-am list           plain-text dump (machine-readable)
+am list           plain-text dump (machine-readable, one SOURCE column per agent)
 am follow <id>    open dashboard with bottom pane live-tailing one transcript
 am resume <id>    open dashboard with bottom pane running cursor-agent --resume <id>
 am kill           kill the agent-monitor tmux session (monitored agents unaffected)

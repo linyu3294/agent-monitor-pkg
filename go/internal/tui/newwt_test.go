@@ -95,10 +95,11 @@ func TestNewWorktreeSelectsCodewhale(t *testing.T) {
 	mdl, _ = mdl.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	mdl, _ = mdl.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	mm := mdl.(*model)
-	if mm.form.agent != wtbridge.AgentCursor {
-		t.Fatalf("default agent = %v, want cursor", mm.form.agent)
+	// Codewhale is on PATH in this test, so it is the default launcher.
+	if mm.form.agent != wtbridge.AgentCodewhale {
+		t.Fatalf("default agent = %v, want codewhale", mm.form.agent)
 	}
-	if !strings.Contains(mm.View(), "cursor-agent") {
+	if !strings.Contains(mm.View(), "codewhale") {
 		t.Fatal("modal does not render the default agent")
 	}
 
@@ -109,13 +110,18 @@ func TestNewWorktreeSelectsCodewhale(t *testing.T) {
 	if mm.form.focused != 3 {
 		t.Fatalf("focused = %d, want 3 (agent)", mm.form.focused)
 	}
+	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	mm = mdl.(*model)
+	if mm.form.agent != wtbridge.AgentCursor {
+		t.Fatalf("agent after ← = %v, want cursor-agent", mm.form.agent)
+	}
+	if !strings.Contains(mm.View(), "cursor-agent") {
+		t.Fatal("modal does not render the selected agent")
+	}
 	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRight})
 	mm = mdl.(*model)
 	if mm.form.agent != wtbridge.AgentCodewhale {
 		t.Fatalf("agent after → = %v, want codewhale", mm.form.agent)
-	}
-	if !strings.Contains(mm.View(), "codewhale") {
-		t.Fatal("modal does not render the selected agent")
 	}
 
 	mm.form.branch.SetValue("feature-wh")

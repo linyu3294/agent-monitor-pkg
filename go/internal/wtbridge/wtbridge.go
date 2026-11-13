@@ -115,7 +115,7 @@ func (a Agent) Next(delta int) Agent {
 func (a Agent) LaunchCommand(prompt string) string {
 	cmd := "cursor-agent --yolo"
 	if a == AgentCodewhale {
-		cmd = "codewhale --approval-policy never --sandbox-mode workspace-write"
+		cmd = "codewhale --approval-policy never --sandbox-mode workspace-write --skip-onboarding --fresh"
 	}
 	if strings.TrimSpace(prompt) != "" {
 		cmd += " -- " + shellQuote(prompt)

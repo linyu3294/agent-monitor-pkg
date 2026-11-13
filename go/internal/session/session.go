@@ -32,6 +32,34 @@ const (
 	StatePaused   State = "PAUSED"
 )
 
+// Source identifies the agent CLI that owns a transcript. The zero value
+// is SourceCursor, so every pre-existing session keeps its meaning.
+type Source string
+
+const (
+	// SourceCursor is a Cursor transcript under ~/.cursor/projects.
+	SourceCursor Source = "cursor"
+	// SourceCodewhale is a Codewhale session log under ~/.codewhale/sessions.
+	SourceCodewhale Source = "codewhale"
+)
+
+// AgentLabel is the short CLI name rendered on a card.
+func (s Session) AgentLabel() string {
+	if s.Source == SourceCodewhale {
+		return "codewhale"
+	}
+	return "cursor"
+}
+
+// ResumeCommand is the shell line that reattaches to this session in a
+// fresh terminal. Mirrors the `cmd:` row on each card.
+func (s Session) ResumeCommand() string {
+	if s.Source == SourceCodewhale {
+		return "codewhale resume " + s.ID
+	}
+	return "cursor-agent --resume " + s.ID
+}
+
 // Role mirrors the role field on a JSONL transcript entry.
 type Role string
 
@@ -45,7 +73,8 @@ const (
 // derived metadata. Filled by the scanner on each tick.
 type Session struct {
 	ID             string // UUID
-	TranscriptPath string // absolute path to <chatId>.jsonl
+	Source         Source // which agent CLI owns this session (cursor/codewhale)
+	TranscriptPath string // absolute path to the session log
 	ProjectDir     string // basename of the encoded project dir
 	Project        string // human label (decoded, prefix-stripped)
 	WorktreeSlug   string // empty when not in a worktree
@@ -94,8 +123,8 @@ func ProjectLabel(projectDir string) string {
 //	$HOME/.cursor/projects/<encoded>/agent-transcripts/<id>/<id>.jsonl
 //	                       └─ this ─┘
 func ProjectDirOf(transcriptPath string) string {
-	dir := filepath.Dir(transcriptPath)        // .../<id>
-	dir = filepath.Dir(dir)                    // .../agent-transcripts
-	dir = filepath.Dir(dir)                    // .../<encoded>
+	dir := filepath.Dir(transcriptPath) // .../<id>
+	dir = filepath.Dir(dir)             // .../agent-transcripts
+	dir = filepath.Dir(dir)             // .../<encoded>
 	return filepath.Base(dir)
 }

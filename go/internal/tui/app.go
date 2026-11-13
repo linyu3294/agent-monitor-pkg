@@ -157,11 +157,21 @@ func New(opts Options, version string) *model {
 			branch: branch,
 			base:   base,
 			prompt: prompt,
-			agent:  wtbridge.AgentCursor,
+			agent:  defaultAgent(),
 		},
 		tombstones: map[string]struct{}{},
 		version:    version,
 	}
+}
+
+// defaultAgent prefers codewhale when it is installed, so the `n` modal
+// launches the lowest-friction agent without an extra keystroke. Cursor
+// stays the fallback on machines that only have cursor-agent.
+func defaultAgent() wtbridge.Agent {
+	if wtbridge.AgentCodewhale.Available() {
+		return wtbridge.AgentCodewhale
+	}
+	return wtbridge.AgentCursor
 }
 
 // Init is bubbletea's startup hook; we kick off the first tick and

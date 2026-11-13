@@ -49,6 +49,9 @@ var (
 	styleValue         = lipgloss.NewStyle()
 	styleValueBold     = lipgloss.NewStyle().Bold(true)
 	styleValueId       = lipgloss.NewStyle().Foreground(colorGreen).Bold(true) // chat-id row pops
+	// styleAgent marks non-default agent sources on the card title so a
+	// Codewhale session is never mistaken for a Cursor one.
+	styleAgent = lipgloss.NewStyle().Foreground(colorGreen)
 
 	styleConfirm    = lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
 	styleConfirmErr = lipgloss.NewStyle().Foreground(colorRed).Bold(true)
@@ -272,7 +275,11 @@ func (m *model) renderCard(s session.Session, selected bool) string {
 	}
 
 	stateText := stl.Render(string(state))
-	title := fmt.Sprintf(" %s  ·  %s ", styleValueBold.Render(s.Project), stateText)
+	agent := ""
+	if s.Source == session.SourceCodewhale {
+		agent = "  ·  " + styleAgent.Render("codewhale")
+	}
+	title := fmt.Sprintf(" %s%s  ·  %s ", styleValueBold.Render(s.Project), agent, stateText)
 	rightLabel := fmt.Sprintf(" %s ", styleDim.Render(ago))
 	dashCount := totalW - lipgloss.Width(title) - lipgloss.Width(rightLabel) - 4
 	if dashCount < 2 {
@@ -300,7 +307,7 @@ func (m *model) renderCard(s session.Session, selected bool) string {
 	}
 	rows = append(rows,
 		renderRow(contentW, "id:", s.ID, styleValueId),
-		renderRow(contentW, "cmd:", "cursor-agent --resume "+s.ID, styleDim),
+		renderRow(contentW, "cmd:", s.ResumeCommand(), styleDim),
 	)
 
 	bot := "  " + styleCardBorder.Render("└"+strings.Repeat("─", totalW-2)+"┘")

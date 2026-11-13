@@ -66,11 +66,11 @@ func TestLaunchCommand(t *testing.T) {
 		{"cursor prompt", AgentCursor, "fix it", "cursor-agent --yolo -- 'fix it'"},
 		{
 			"codewhale default", AgentCodewhale, "",
-			"codewhale --approval-policy never --sandbox-mode workspace-write",
+			"codewhale --approval-policy never --sandbox-mode workspace-write --skip-onboarding --fresh",
 		},
 		{
 			"codewhale prompt", AgentCodewhale, "it's broken",
-			`codewhale --approval-policy never --sandbox-mode workspace-write -- 'it'\''s broken'`,
+			`codewhale --approval-policy never --sandbox-mode workspace-write --skip-onboarding --fresh -- 'it'\''s broken'`,
 		},
 	}
 	for _, tc := range tests {
