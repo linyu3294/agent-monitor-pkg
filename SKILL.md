@@ -64,7 +64,7 @@ Press `?` for the full help modal grouped by category. Hotkeys only fire when th
 | | `y` | copy chat id to clipboard |
 | | `o` | open worktree in Cursor |
 | | `i` | open nvim + Diffview iTerm tab |
-| Worktree lifecycle | `n` | new worktree (modal: branch / base / prompt) |
+| Worktree lifecycle | `n` | new worktree (modal: repo / branch / base / agent / prompt; `agent` is `cursor-agent` or `codewhale`, ←/→ to change) |
 | | `r` | remove the selected card (y/N confirm). **Worktree card** → kill agent + `wt remove <slug> --force` (worktree dir + branch deleted). **Primary card** → kill agent + drop card (no filesystem changes). |
 | | `s` | `wt sync` |
 | Agent control | `x` | pause / resume the selected agent (SIGSTOP / SIGCONT) |

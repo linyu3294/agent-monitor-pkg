@@ -407,7 +407,7 @@ Multi-agent
   i    open nvim + Diffview (worktree only)
 
 Worktree lifecycle
-  n    new worktree (repo / branch / base / prompt)
+  n    new worktree (repo / branch / base / agent / prompt)
   r    remove selected (y/N confirm)
   s    wt sync (rebase onto base)
 
@@ -440,6 +440,7 @@ func (m *model) viewNewWt() string {
 	b.WriteString("repo:   " + m.form.repo.View() + "\n")
 	b.WriteString("branch: " + m.form.branch.View() + "\n")
 	b.WriteString("base:   " + m.form.base.View() + "\n")
+	b.WriteString("agent:  " + m.viewAgentField() + "\n")
 	b.WriteString("prompt: " + m.form.prompt.View() + "\n")
 	if m.form.err != "" {
 		b.WriteString("\n")
@@ -447,8 +448,22 @@ func (m *model) viewNewWt() string {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(styleDim.Render("repo is the git checkout · base defaults to origin/main · prompt is sent to cursor-agent"))
+	b.WriteString(styleDim.Render("repo is the git checkout · base defaults to origin/main · agent is the CLI launched in the new tab"))
 	return m.centerInModal(b.String())
+}
+
+// viewAgentField renders the launcher selector. It cycles in place
+// rather than opening a list, so the chevrons carry the affordance and
+// the focused value brightens the way a text cursor would.
+func (m *model) viewAgentField() string {
+	value := m.form.agent.String()
+	styled := styleValue.Render(value)
+	hint := ""
+	if m.form.focused == 3 {
+		styled = styleSel.Render(value)
+		hint = "  " + styleDim.Render("←/→")
+	}
+	return styleDim.Render("‹") + " " + styled + " " + styleDim.Render("›") + hint
 }
 
 // centerInModal wraps content in the neon-pink modal frame and centers

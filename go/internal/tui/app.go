@@ -60,7 +60,8 @@ type newWtForm struct {
 	branch  textinput.Model
 	base    textinput.Model
 	prompt  textinput.Model
-	focused int // 0=repo, 1=branch, 2=base, 3=prompt
+	agent   wtbridge.Agent
+	focused int // 0=repo, 1=branch, 2=base, 3=agent, 4=prompt
 	err     string
 }
 
@@ -156,6 +157,7 @@ func New(opts Options, version string) *model {
 			branch: branch,
 			base:   base,
 			prompt: prompt,
+			agent:  wtbridge.AgentCursor,
 		},
 		tombstones: map[string]struct{}{},
 		version:    version,

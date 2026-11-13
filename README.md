@@ -53,7 +53,7 @@ Re-run `install.sh` any time — it's idempotent.
 | `y` | copy chat id to clipboard |
 | `o` | open worktree in Cursor |
 | `i` | open nvim + Diffview iTerm tab |
-| `n` | new worktree (modal: branch / base / prompt) |
+| `n` | new worktree (modal: repo / branch / base / agent / prompt) |
 | `r` | kill agent (and remove worktree if attached) |
 | `s` | `wt sync` — rebase onto base |
 | `x` | pause / resume the selected agent (`SIGSTOP` / `SIGCONT`) |

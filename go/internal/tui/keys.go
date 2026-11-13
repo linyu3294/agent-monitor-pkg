@@ -443,6 +443,7 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		branch := strings.TrimSpace(m.form.branch.Value())
 		base := strings.TrimSpace(m.form.base.Value())
 		prompt := m.form.prompt.Value()
+		agent := m.form.agent
 		if repo == "" {
 			m.form.err = "repo path is required — this workspace is not a git repo"
 			m.focusNewWt(0)
@@ -451,6 +452,11 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if branch == "" {
 			m.form.err = "branch is required"
 			m.focusNewWt(1)
+			return m, nil
+		}
+		if !agent.Available() {
+			m.form.err = agent.Bin() + " is not on PATH — install it or pick another agent"
+			m.focusNewWt(3)
 			return m, nil
 		}
 		top := wtbridge.GitPrimary(repo)
@@ -464,10 +470,29 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.form.err = ""
 		m.state = stateList
+		// Codewhale sessions have no Cursor transcript, so the worktree
+		// can only surface as a stub card. Un-hide stubs so the agent the
+		// user just launched is actually visible in the list.
+		if agent != wtbridge.AgentCursor {
+			m.showEmpty = true
+		}
 		return m, m.runWtCmd(
-			fmt.Sprintf("created worktree %s", branch),
-			func() error { return m.wt.Create(top, branch, base, prompt) },
+			fmt.Sprintf("created worktree %s with %s", branch, agent),
+			func() error { return m.wt.Create(top, branch, base, prompt, agent) },
 		)
+	}
+	// The agent field is a selector, not a text input: ←/→ (or h/l, space)
+	// cycle the launcher instead of typing into it.
+	if m.form.focused == 3 {
+		switch key {
+		case "left", "h":
+			m.form.agent = m.form.agent.Next(-1)
+			m.form.err = ""
+		case "right", "l", " ":
+			m.form.agent = m.form.agent.Next(1)
+			m.form.err = ""
+		}
+		return m, nil
 	}
 	// Pass to the focused field.
 	m.form.err = ""
@@ -479,7 +504,7 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.form.branch, cmd = m.form.branch.Update(msg)
 	case 2:
 		m.form.base, cmd = m.form.base.Update(msg)
-	case 3:
+	case 4:
 		m.form.prompt, cmd = m.form.prompt.Update(msg)
 	}
 	return m, cmd
@@ -498,13 +523,13 @@ func (m *model) focusNewWt(idx int) {
 		m.form.branch.Focus()
 	case 2:
 		m.form.base.Focus()
-	case 3:
+	case 4:
 		m.form.prompt.Focus()
 	}
 }
 
 func (m *model) cycleNewWtFocus(delta int) {
-	m.focusNewWt((m.form.focused + delta + 4) % 4)
+	m.focusNewWt((m.form.focused + delta + 5) % 5)
 }
 
 // short returns the first 8 chars of a UUID for compact status messages.
