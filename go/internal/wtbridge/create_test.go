@@ -28,7 +28,7 @@ func TestCreateWithoutWt(t *testing.T) {
 	repo := initRepo(t)
 	t.Setenv("WT_NO_OPEN", "1")
 	b := &Bridge{}
-	if err := b.Create(repo, "feature-n", "main", ""); err != nil {
+	if err := b.Create(repo, "feature-n", "main", "", AgentCursor); err != nil {
 		t.Fatal(err)
 	}
 	dest := filepath.Join(repo, ".worktrees", "feature-n")
@@ -37,6 +37,60 @@ func TestCreateWithoutWt(t *testing.T) {
 	}
 	if got := GitPrimary(dest); got != repo {
 		t.Fatalf("GitPrimary(worktree) = %q, want %q", got, repo)
+	}
+}
+
+// TestCreateWithoutWtCodewhale covers the non-cursor launcher on a machine
+// with no wt binary: the worktree still lands in the dashboard's scanned
+// layout, and no cursor-agent tab is opened.
+func TestCreateWithoutWtCodewhale(t *testing.T) {
+	repo := initRepo(t)
+	t.Setenv("WT_NO_OPEN", "1")
+	b := &Bridge{}
+	if err := b.Create(repo, "feature-wh", "main", "write the tests", AgentCodewhale); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".worktrees", "feature-wh")); err != nil {
+		t.Fatalf("worktree dir: %v", err)
+	}
+}
+
+func TestLaunchCommand(t *testing.T) {
+	tests := []struct {
+		name   string
+		agent  Agent
+		prompt string
+		want   string
+	}{
+		{"cursor default", AgentCursor, "", "cursor-agent --yolo"},
+		{"cursor prompt", AgentCursor, "fix it", "cursor-agent --yolo -- 'fix it'"},
+		{
+			"codewhale default", AgentCodewhale, "",
+			"codewhale --approval-policy never --sandbox-mode workspace-write --skip-onboarding --fresh",
+		},
+		{
+			"codewhale prompt", AgentCodewhale, "it's broken",
+			`codewhale --approval-policy never --sandbox-mode workspace-write --skip-onboarding --fresh -- 'it'\''s broken'`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.agent.LaunchCommand(tc.prompt); got != tc.want {
+				t.Fatalf("LaunchCommand = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAgentNextWraps(t *testing.T) {
+	if got := AgentCursor.Next(-1); got != AgentCodewhale {
+		t.Fatalf("cursor.Next(-1) = %v, want codewhale", got)
+	}
+	if got := AgentCodewhale.Next(1); got != AgentCursor {
+		t.Fatalf("codewhale.Next(1) = %v, want cursor", got)
+	}
+	if got := AgentCursor.Next(1); got != AgentCodewhale {
+		t.Fatalf("cursor.Next(1) = %v, want codewhale", got)
 	}
 }
 

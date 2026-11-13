@@ -51,21 +51,95 @@ func (b *Bridge) Resume(id, cwd string) error {
 	return runIn(cwd, b.bin, "resume", id, "--cwd", cwd)
 }
 
+// Agent identifies which CLI the `n` modal launches inside a fresh
+// worktree. Cursor preserves the historical behavior; Codewhale opens an
+// interactive Codewhale session in the same tab.
+type Agent int
+
+const (
+	// AgentCursor launches `cursor-agent --yolo`.
+	AgentCursor Agent = iota
+	// AgentCodewhale launches `codewhale` with an equivalent unattended
+	// posture, confined to the new worktree.
+	AgentCodewhale
+)
+
+// agents is the launcher order shown in the `n` modal.
+var agents = []Agent{AgentCursor, AgentCodewhale}
+
+// String is the label rendered in the modal and in status toasts.
+func (a Agent) String() string {
+	if a == AgentCodewhale {
+		return "codewhale"
+	}
+	return "cursor-agent"
+}
+
+// Bin is the executable this agent launches.
+func (a Agent) Bin() string {
+	if a == AgentCodewhale {
+		return "codewhale"
+	}
+	return "cursor-agent"
+}
+
+// Available reports whether the launcher binary is on PATH. The modal
+// checks this before creating anything, so a missing CLI fails inline
+// instead of leaving an orphan worktree with a dead tab.
+func (a Agent) Available() bool {
+	_, err := exec.LookPath(a.Bin())
+	return err == nil
+}
+
+// Next returns the agent delta places away in agents, wrapping around.
+// delta may be negative (the modal's left arrow).
+func (a Agent) Next(delta int) Agent {
+	n := len(agents)
+	idx := 0
+	for i, cand := range agents {
+		if cand == a {
+			idx = i
+			break
+		}
+	}
+	idx = ((idx+delta)%n + n) % n
+	return agents[idx]
+}
+
+// LaunchCommand is the shell line typed into the new iTerm tab.
+//
+// cursor-agent gets --yolo (skip approvals) because the tab is meant to
+// run unattended. Codewhale's analogue is --approval-policy never; the
+// sandbox stays at workspace-write so the agent can edit freely inside
+// the new worktree without reaching the rest of the machine.
+func (a Agent) LaunchCommand(prompt string) string {
+	cmd := "cursor-agent --yolo"
+	if a == AgentCodewhale {
+		cmd = "codewhale --approval-policy never --sandbox-mode workspace-write --skip-onboarding --fresh"
+	}
+	if strings.TrimSpace(prompt) != "" {
+		cmd += " -- " + shellQuote(prompt)
+	}
+	return cmd
+}
+
 // Create spawns a new worktree at <branch> based on <base> and opens an
-// iTerm tab running cursor-agent. When the wt CLI is installed this shells
-// out to `wt create --iterm --yolo`. Otherwise it creates
+// iTerm tab running <agent>. When the wt CLI is installed and the agent is
+// cursor-agent, this shells out to `wt create --iterm --yolo` (wt's tab
+// path hardcodes cursor-agent). Otherwise it creates
 // `<repo>/.worktrees/<slug>` with git directly — the layout the dashboard
-// already scans — so `n` still works on machines without the worktrees skill.
+// already scans — and opens the tab itself, so `n` works without the
+// worktrees skill and non-cursor launchers are not forced through wt.
 // <prompt> may be empty.
-func (b *Bridge) Create(repo, branch, base, prompt string) error {
-	if b.Available() {
+func (b *Bridge) Create(repo, branch, base, prompt string, agent Agent) error {
+	if b.Available() && agent == AgentCursor {
 		args := []string{"create", branch, "--base", base, "--iterm", "--yolo"}
 		if prompt != "" {
 			args = append(args, "--prompt", prompt)
 		}
 		return runIn(repo, b.bin, args...)
 	}
-	return createWithGit(repo, branch, base, prompt)
+	return createWithGit(repo, branch, base, prompt, agent)
 }
 
 // GitPrimary returns the main checkout for the git repo containing dir.
@@ -113,7 +187,7 @@ func expandUserPath(dir string) string {
 	return filepath.Clean(dir)
 }
 
-func createWithGit(repo, branch, base, prompt string) error {
+func createWithGit(repo, branch, base, prompt string, agent Agent) error {
 	top := GitPrimary(repo)
 	if top == "" {
 		return fmt.Errorf("not a git repo: %s", repo)
@@ -137,11 +211,7 @@ func createWithGit(repo, branch, base, prompt string) error {
 	if os.Getenv("WT_NO_OPEN") == "1" {
 		return nil
 	}
-	cmd := "cursor-agent --yolo"
-	if strings.TrimSpace(prompt) != "" {
-		cmd += " -- " + shellQuote(prompt)
-	}
-	if err := OpenITerm(dest, cmd); err != nil {
+	if err := OpenITerm(dest, agent.LaunchCommand(prompt)); err != nil {
 		return fmt.Errorf("worktree created at %s, but opening iTerm failed: %w", dest, err)
 	}
 	return nil

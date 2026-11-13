@@ -59,12 +59,12 @@ Press `?` for the full help modal grouped by category. Hotkeys only fire when th
 | Navigation | `j`/`k`/`↓`/`↑` | next / previous |
 | | `g`/`G` | first / last |
 | | `Enter` | focus selected card in the wt-manager pane |
-| Multi-agent | `f` | follow (live transcript tail in iTerm) |
-| | `a` | resume in new iTerm tab (live-process gate prevents duplicate cards) |
+| Multi-agent | `f` | follow (live transcript tail in iTerm; Cursor transcripts only — on a Codewhale card the dashboard points you at `a`) |
+| | `a` | resume in new iTerm tab (live-process gate prevents duplicate cards; uses `cursor-agent --resume` or `codewhale resume` to match the card's source) |
 | | `y` | copy chat id to clipboard |
 | | `o` | open worktree in Cursor |
 | | `i` | open nvim + Diffview iTerm tab |
-| Worktree lifecycle | `n` | new worktree (modal: branch / base / prompt) |
+| Worktree lifecycle | `n` | new worktree (modal: repo / branch / base / agent / prompt; `agent` is `cursor-agent` or `codewhale`, ←/→ to change; defaults to `codewhale` when it is on `PATH`) |
 | | `r` | remove the selected card (y/N confirm). **Worktree card** → kill agent + `wt remove <slug> --force` (worktree dir + branch deleted). **Primary card** → kill agent + drop card (no filesystem changes). |
 | | `s` | `wt sync` |
 | Agent control | `x` | pause / resume the selected agent (SIGSTOP / SIGCONT) |

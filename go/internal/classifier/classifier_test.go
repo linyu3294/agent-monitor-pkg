@@ -74,6 +74,35 @@ func TestClassify(t *testing.T) {
 			view: live,
 			want: session.StateActive,
 		},
+		// A Codewhale log is rewritten per turn, so a multi-minute tool
+		// call leaves mtime stale while the agent is working. Its
+		// liveness is an open live-marker fd, which a dead session
+		// cannot hold, so the clock must not force IDLE.
+		{
+			name: "stale codewhale with a live fd and a tool in flight is active",
+			sess: session.Session{ID: "a", Source: session.SourceCodewhale, Mtime: now - 600, LastRole: session.RoleAssistant, LastTool: "bash"},
+			view: live,
+			want: session.StateActive,
+		},
+		{
+			name: "stale codewhale whose turn ended is idle",
+			sess: session.Session{ID: "a", Source: session.SourceCodewhale, Mtime: now - 600, LastRole: session.RoleAssistant, LastText: "done"},
+			view: live,
+			want: session.StateIdle,
+		},
+		{
+			name: "stale codewhale with no live fd is still idle",
+			sess: session.Session{ID: "a", Source: session.SourceCodewhale, Mtime: now - 600, LastRole: session.RoleAssistant, LastTool: "bash"},
+			view: dead,
+			want: session.StateIdle,
+		},
+		// Cursor keeps the clock rule: its pids idle without recording.
+		{
+			name: "stale cursor stays idle despite a live pid",
+			sess: session.Session{ID: "a", Source: session.SourceCursor, Mtime: now - 600, LastRole: session.RoleAssistant, LastTool: "Shell"},
+			view: live,
+			want: session.StateIdle,
+		},
 	}
 
 	for _, c := range cases {

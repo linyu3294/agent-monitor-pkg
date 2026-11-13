@@ -139,6 +139,14 @@ func (m *model) handleResume() (tea.Model, tea.Cmd) {
 		return m, m.flashConfirm("can't resolve workspace path", "")
 	}
 	id := s.ID
+	if s.Source == session.SourceCodewhale {
+		// `wt resume` hardcodes cursor-agent; a Codewhale card resumes
+		// through its own CLI, in the same workspace.
+		return m, m.runWtCmd(
+			fmt.Sprintf("resumed %s in new iTerm tab", short(id)),
+			func() error { return wtbridge.OpenITerm(cwd, "codewhale resume "+id) },
+		)
+	}
 	return m, m.runWtCmd(
 		fmt.Sprintf("resumed %s in new iTerm tab", short(id)),
 		func() error { return m.wt.Resume(id, cwd) },
@@ -152,6 +160,12 @@ func (m *model) handleFollow() (tea.Model, tea.Cmd) {
 	s := m.selectedSession()
 	if s == nil {
 		return m, nil
+	}
+	if s.Source == session.SourceCodewhale {
+		return m, m.flashConfirm(
+			"follow tails Cursor transcripts only",
+			"press 'a' to resume this Codewhale session in a new tab",
+		)
 	}
 	id := s.ID
 	return m, m.runWtCmd(
@@ -178,7 +192,7 @@ func (m *model) handlePauseToggle() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if !m.proc.IsLive(s.ID) {
-		return m, m.flashConfirm("no live cursor-agent process for this chat", "(already exited?)")
+		return m, m.flashConfirm("no live agent process for this session", "(already exited?)")
 	}
 	id := s.ID
 	wasPaused := m.proc.IsPaused(id)
@@ -443,6 +457,7 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		branch := strings.TrimSpace(m.form.branch.Value())
 		base := strings.TrimSpace(m.form.base.Value())
 		prompt := m.form.prompt.Value()
+		agent := m.form.agent
 		if repo == "" {
 			m.form.err = "repo path is required — this workspace is not a git repo"
 			m.focusNewWt(0)
@@ -451,6 +466,11 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if branch == "" {
 			m.form.err = "branch is required"
 			m.focusNewWt(1)
+			return m, nil
+		}
+		if !agent.Available() {
+			m.form.err = agent.Bin() + " is not on PATH — install it or pick another agent"
+			m.focusNewWt(3)
 			return m, nil
 		}
 		top := wtbridge.GitPrimary(repo)
@@ -464,10 +484,29 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.form.err = ""
 		m.state = stateList
+		// Codewhale sessions have no Cursor transcript, so the worktree
+		// can only surface as a stub card. Un-hide stubs so the agent the
+		// user just launched is actually visible in the list.
+		if agent != wtbridge.AgentCursor {
+			m.showEmpty = true
+		}
 		return m, m.runWtCmd(
-			fmt.Sprintf("created worktree %s", branch),
-			func() error { return m.wt.Create(top, branch, base, prompt) },
+			fmt.Sprintf("created worktree %s with %s", branch, agent),
+			func() error { return m.wt.Create(top, branch, base, prompt, agent) },
 		)
+	}
+	// The agent field is a selector, not a text input: ←/→ (or h/l, space)
+	// cycle the launcher instead of typing into it.
+	if m.form.focused == 3 {
+		switch key {
+		case "left", "h":
+			m.form.agent = m.form.agent.Next(-1)
+			m.form.err = ""
+		case "right", "l", " ":
+			m.form.agent = m.form.agent.Next(1)
+			m.form.err = ""
+		}
+		return m, nil
 	}
 	// Pass to the focused field.
 	m.form.err = ""
@@ -479,7 +518,7 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.form.branch, cmd = m.form.branch.Update(msg)
 	case 2:
 		m.form.base, cmd = m.form.base.Update(msg)
-	case 3:
+	case 4:
 		m.form.prompt, cmd = m.form.prompt.Update(msg)
 	}
 	return m, cmd
@@ -498,13 +537,13 @@ func (m *model) focusNewWt(idx int) {
 		m.form.branch.Focus()
 	case 2:
 		m.form.base.Focus()
-	case 3:
+	case 4:
 		m.form.prompt.Focus()
 	}
 }
 
 func (m *model) cycleNewWtFocus(delta int) {
-	m.focusNewWt((m.form.focused + delta + 4) % 4)
+	m.focusNewWt((m.form.focused + delta + 5) % 5)
 }
 
 // short returns the first 8 chars of a UUID for compact status messages.

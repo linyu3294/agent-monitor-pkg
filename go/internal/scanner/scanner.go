@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -30,15 +29,35 @@ const NoSessionID = "(no session)"
 // Options controls a Scanner instance.
 type Options struct {
 	ProjectsDir   string        // default: $HOME/.cursor/projects
+	CodewhaleDir  string        // default: $HOME/.codewhale/sessions (empty disables)
 	IdleThreshold time.Duration // skip transcripts mtime older than now-IdleThreshold
 	MaxCards      int           // hard upper bound on returned sessions
 	TailBytes     int64         // bytes to read from the tail of each transcript (default 8192)
+}
+
+// candidate is one on-disk session log that passed the idle cutoff.
+type candidate struct {
+	path   string
+	mtime  int64
+	id     string         // chat/session id; derived from the path when empty
+	source session.Source // zero value means Cursor
 }
 
 // Scanner scans the on-disk project tree and produces Session records.
 type Scanner struct {
 	opts  Options
 	cache map[string]cacheEntry // key: transcript path
+	// whCwd caches the workspace of logs that fell below the idle
+	// cutoff. Without it, a stale log would be re-read on every tick
+	// just to decide whether its worktree still exists — which would
+	// break the quiescent-tick cost contract.
+	whCwd map[string]whCwdEntry
+}
+
+// whCwdEntry remembers the workspace found for one aged-out log.
+type whCwdEntry struct {
+	mtime int64
+	cwd   string
 }
 
 type cacheEntry struct {
@@ -55,6 +74,13 @@ func New(opts Options) *Scanner {
 		home, _ := os.UserHomeDir()
 		opts.ProjectsDir = filepath.Join(home, ".cursor", "projects")
 	}
+	if opts.CodewhaleDir == "" {
+		if dir := os.Getenv("AM_CODEWHALE_DIR"); dir != "" {
+			opts.CodewhaleDir = dir
+		} else if home, err := os.UserHomeDir(); err == nil && home != "" {
+			opts.CodewhaleDir = filepath.Join(home, ".codewhale", "sessions")
+		}
+	}
 	if opts.IdleThreshold == 0 {
 		opts.IdleThreshold = 20 * time.Minute
 	}
@@ -64,7 +90,11 @@ func New(opts Options) *Scanner {
 	if opts.TailBytes == 0 {
 		opts.TailBytes = 8192
 	}
-	return &Scanner{opts: opts, cache: make(map[string]cacheEntry)}
+	return &Scanner{
+		opts:  opts,
+		cache: make(map[string]cacheEntry),
+		whCwd: make(map[string]whCwdEntry),
+	}
 }
 
 // Scan walks the projects dir and returns sessions sorted newest first.
@@ -75,23 +105,18 @@ func (s *Scanner) Scan() []session.Session {
 	cutoff := time.Now().Add(-s.opts.IdleThreshold).Unix()
 
 	root := s.opts.ProjectsDir
-	if _, err := os.Stat(root); err != nil {
-		return nil
-	}
 
-	type candidate struct {
-		path  string
-		mtime int64
-	}
 	var cands []candidate
 
 	// We expect exactly four levels under root:
 	//   <root>/<project>/agent-transcripts/<id>/<id>.jsonl
 	// so a hand-rolled descent is faster than filepath.Walk and avoids
-	// recursing into unrelated directories.
+	// recursing into unrelated directories. A machine with no Cursor
+	// install still gets Codewhale cards, so a missing root contributes
+	// nothing rather than aborting the scan.
 	projects, err := os.ReadDir(root)
 	if err != nil {
-		return nil
+		projects = nil
 	}
 	for _, pe := range projects {
 		if !pe.IsDir() {
@@ -139,21 +164,30 @@ func (s *Scanner) Scan() []session.Session {
 			if !isWorktree && m < cutoff {
 				continue
 			}
-			cands = append(cands, candidate{f, m})
+			cands = append(cands, candidate{path: f, mtime: m, source: session.SourceCursor})
 		}
 	}
 
-	sort.Slice(cands, func(i, j int) bool { return cands[i].mtime > cands[j].mtime })
+	// Codewhale keeps its own store; merge its live sessions into the
+	// same candidate list so the dashboard shows one card per agent.
+	cands = append(cands, s.codewhaleCandidates(cutoff)...)
+
+	sortCandidatesNewestFirst(cands)
 	if len(cands) > s.opts.MaxCards {
 		cands = cands[:s.opts.MaxCards]
 	}
 
 	out := make([]session.Session, 0, len(cands))
 	for _, c := range cands {
+		if c.source == session.SourceCodewhale {
+			out = append(out, s.codewhaleSession(c))
+			continue
+		}
 		sess := session.Session{
 			TranscriptPath: c.path,
 			Mtime:          c.mtime,
 			ID:             chatIDFromPath(c.path),
+			Source:         session.SourceCursor,
 		}
 		sess.ProjectDir = session.ProjectDirOf(c.path)
 		sess.Project = session.ProjectLabel(sess.ProjectDir)

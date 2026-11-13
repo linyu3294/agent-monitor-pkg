@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,6 +70,107 @@ func TestNewWorktreeInfersRepoFromShellCWD(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(repo, ".worktrees", "feature-n")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestNewWorktreeSelectsCodewhale drives the agent selector through the
+// real key path: `n`, tab to the agent row, →, then Enter.
+func TestNewWorktreeSelectsCodewhale(t *testing.T) {
+	repo := wtbridge.GitPrimary(initGitRepo(t))
+	if repo == "" {
+		t.Fatal("temp repo has no git primary")
+	}
+	stubDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stubDir, "codewhale"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("AM_WT_BIN", filepath.Join(t.TempDir(), "missing-wt"))
+	t.Setenv("WT_NO_OPEN", "1")
+
+	m := New(Options{RefreshInterval: time.Second, IdleThreshold: time.Hour, MaxCards: 10}, "test")
+	m.sessions = []session.Session{{ID: "abcdef1234567890", ProjectDir: repo}}
+
+	var mdl tea.Model = m
+	mdl, _ = mdl.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	mdl, _ = mdl.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	mm := mdl.(*model)
+	// Codewhale is on PATH in this test, so it is the default launcher.
+	if mm.form.agent != wtbridge.AgentCodewhale {
+		t.Fatalf("default agent = %v, want codewhale", mm.form.agent)
+	}
+	if !strings.Contains(mm.View(), "codewhale") {
+		t.Fatal("modal does not render the default agent")
+	}
+
+	// Default focus is branch (1); tab twice lands on the agent row (3).
+	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyTab})
+	mdl, _ = mdl.Update(tea.KeyMsg{Type: tea.KeyTab})
+	mm = mdl.(*model)
+	if mm.form.focused != 3 {
+		t.Fatalf("focused = %d, want 3 (agent)", mm.form.focused)
+	}
+	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	mm = mdl.(*model)
+	if mm.form.agent != wtbridge.AgentCursor {
+		t.Fatalf("agent after ← = %v, want cursor-agent", mm.form.agent)
+	}
+	if !strings.Contains(mm.View(), "cursor-agent") {
+		t.Fatal("modal does not render the selected agent")
+	}
+	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRight})
+	mm = mdl.(*model)
+	if mm.form.agent != wtbridge.AgentCodewhale {
+		t.Fatalf("agent after → = %v, want codewhale", mm.form.agent)
+	}
+
+	mm.form.branch.SetValue("feature-wh")
+	mm.form.base.SetValue("main")
+	mdl, cmd := mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected create command")
+	}
+	mdl, _ = mdl.Update(cmd())
+	mm = mdl.(*model)
+	if mm.state != stateList {
+		t.Fatalf("state after enter = %v err=%q", mm.state, mm.form.err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".worktrees", "feature-wh")); err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
+	if !mm.showEmpty {
+		t.Fatal("expected stub cards to be shown so the new codewhale worktree is visible")
+	}
+}
+
+// TestNewWorktreeBlocksMissingAgent keeps the modal open, before any
+// worktree exists, when the chosen launcher is not installed.
+func TestNewWorktreeBlocksMissingAgent(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("AM_WT_BIN", filepath.Join(t.TempDir(), "missing-wt"))
+
+	m := New(Options{RefreshInterval: time.Second, IdleThreshold: time.Hour, MaxCards: 10}, "test")
+	var mdl tea.Model = m
+	mdl, _ = mdl.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	mdl, _ = mdl.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	mm := mdl.(*model)
+	mm.form.repo.SetValue(t.TempDir())
+	mm.form.branch.SetValue("feature-wh")
+	mm.form.agent = wtbridge.AgentCodewhale
+
+	mdl, cmd := mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mm = mdl.(*model)
+	if cmd != nil {
+		t.Fatal("expected to stay in the modal")
+	}
+	if mm.state != stateNewWt {
+		t.Fatalf("state = %v", mm.state)
+	}
+	if !strings.Contains(mm.form.err, "codewhale") || !strings.Contains(mm.form.err, "PATH") {
+		t.Fatalf("err = %q, want a codewhale/PATH message", mm.form.err)
+	}
+	if mm.form.focused != 3 {
+		t.Fatalf("focused = %d, want 3 (agent)", mm.form.focused)
 	}
 }
 
