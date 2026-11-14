@@ -416,7 +416,7 @@ Multi-agent
 
 Worktree lifecycle
   n    new worktree (repo / branch / base / agent / approval / prompt)
-       approval defaults to on-request: the agent asks before acting
+       approval: on-request (default) · auto · never · untrusted
   r    remove selected (y/N confirm)
   s    wt sync (rebase onto base)
 
@@ -462,6 +462,10 @@ func (m *model) viewNewWt() string {
 	if m.form.approval == wtbridge.ApprovalNever {
 		b.WriteString("\n")
 		b.WriteString(styleConfirm.Render("unattended: the new agent will not stop to ask you before it acts"))
+	}
+	if m.form.approval == wtbridge.ApprovalAuto {
+		b.WriteString("\n")
+		b.WriteString(styleDim.Render("auto: safe tool calls run without asking · anything risky still stops for you"))
 	}
 	return m.centerInModal(b.String())
 }

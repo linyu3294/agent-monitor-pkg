@@ -273,8 +273,24 @@ func TestNewWorktreeApprovalDefaultsToAsk(t *testing.T) {
 	}
 	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRight})
 	mm = mdl.(*model)
+	if mm.form.approval != wtbridge.ApprovalAuto {
+		t.Fatalf("approval after → = %v, want auto", mm.form.approval)
+	}
+	if !strings.Contains(mm.View(), "auto") {
+		t.Fatalf("modal does not render the auto posture:\n%s", mm.View())
+	}
+	if testing.Verbose() {
+		t.Logf("auto:\n%s", mm.View())
+	}
+	if strings.Contains(mm.View(), "will not stop to ask you") {
+		t.Fatal("auto must not carry the unattended warning")
+	}
+
+	// One more step is the unattended posture, which must warn.
+	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRight})
+	mm = mdl.(*model)
 	if mm.form.approval != wtbridge.ApprovalNever {
-		t.Fatalf("approval after → = %v, want never", mm.form.approval)
+		t.Fatalf("approval after →→ = %v, want never", mm.form.approval)
 	}
 	if !strings.Contains(mm.View(), "will not stop to ask you") {
 		t.Fatalf("no warning after choosing unattended:\n%s", mm.View())

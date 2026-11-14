@@ -73,13 +73,23 @@ dashboard never switches it for you. It defaults to `on-request`, so a new agent
 stops and asks before it acts. `←` / `→` cycles:
 
 - `on-request` — ask before acting (default)
-- `never (unattended)` — run without stopping, for a worktree you open and walk away from. The modal warns when you select it.
+- `auto (safe calls run)` — run safe tool calls without stopping; anything risky still stops for you
+- `never (unattended)` — run without stopping at all, for a worktree you open and walk away from. The modal warns when you select it.
 - `untrusted (strict)` — refuse unless already trusted
 
-The posture maps to `--approval-policy <value>` for codewhale and to `--yolo` for
-`cursor-agent`, so `--yolo` now appears only when you pick unattended. The sandbox
-stays `workspace-write` either way: the agent edits freely inside its worktree and
-still can't reach the rest of the machine.
+The posture maps per CLI, so each agent uses the closest thing it actually has:
+
+| Posture | codewhale | cursor-agent |
+|---|---|---|
+| `on-request` | `--approval-policy on-request` | default |
+| `auto` | `--approval-policy on-failure` | `--auto-review` (Smart Auto) |
+| `never` | `--approval-policy never` | `--yolo` |
+| `untrusted` | `--approval-policy untrusted` | default (no stricter flag exists) |
+
+The sandbox stays `workspace-write` in every posture: the agent edits freely
+inside its worktree and still can't reach the rest of the machine. When `wt` is
+installed, `auto` deliberately bypasses `wt create --iterm` — wt can only express
+`--yolo`, so routing auto through it would silently launch a different posture.
 
 ## What it watches
 

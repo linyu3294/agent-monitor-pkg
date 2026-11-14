@@ -56,6 +56,35 @@ func TestCreateWithoutWtCodewhale(t *testing.T) {
 	}
 }
 
+// wt create --iterm can only express --yolo, so routing the auto posture
+// through it would silently launch something the user did not choose.
+// Create must fall back to the direct git path instead.
+func TestCreateBypassesWtForAutoApproval(t *testing.T) {
+	repo := initRepo(t)
+	marker := filepath.Join(t.TempDir(), "wt-was-called")
+	stub := filepath.Join(t.TempDir(), "wt")
+	script := "#!/bin/sh\ntouch '" + marker + "'\nexit 0\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AM_WT_BIN", stub)
+	t.Setenv("WT_NO_OPEN", "1")
+
+	b := New()
+	if !b.Available() {
+		t.Fatal("stub wt was not detected")
+	}
+	if err := b.Create(repo, "feature-auto", "main", "", AgentCursor, ApprovalAuto); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("wt was invoked for the auto posture, which it cannot express")
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".worktrees", "feature-auto")); err != nil {
+		t.Fatalf("worktree not created: %v", err)
+	}
+}
+
 func TestLaunchCommand(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -65,11 +94,17 @@ func TestLaunchCommand(t *testing.T) {
 		want     string
 	}{
 		{"cursor asks by default", AgentCursor, ApprovalOnRequest, "", "cursor-agent"},
+		{"cursor auto uses smart auto", AgentCursor, ApprovalAuto, "", "cursor-agent --auto-review"},
 		{"cursor unattended only when chosen", AgentCursor, ApprovalNever, "", "cursor-agent --yolo"},
+		{"cursor untrusted maps to its default", AgentCursor, ApprovalUntrusted, "", "cursor-agent"},
 		{"cursor prompt", AgentCursor, ApprovalOnRequest, "fix it", "cursor-agent -- 'fix it'"},
 		{
 			"codewhale asks by default", AgentCodewhale, ApprovalOnRequest, "",
 			"codewhale --approval-policy on-request --sandbox-mode workspace-write --skip-onboarding --fresh",
+		},
+		{
+			"codewhale auto", AgentCodewhale, ApprovalAuto, "",
+			"codewhale --approval-policy on-failure --sandbox-mode workspace-write --skip-onboarding --fresh",
 		},
 		{
 			"codewhale unattended only when chosen", AgentCodewhale, ApprovalNever, "",
@@ -109,17 +144,36 @@ func TestApprovalZeroValueAsksUser(t *testing.T) {
 }
 
 func TestApprovalNextCycles(t *testing.T) {
-	if got := ApprovalOnRequest.Next(1); got != ApprovalNever {
-		t.Fatalf("on-request.Next(1) = %v, want never", got)
+	// Least to most permissive, then the strictest.
+	want := []Approval{ApprovalOnRequest, ApprovalAuto, ApprovalNever, ApprovalUntrusted}
+	got := ApprovalOnRequest
+	for i, w := range want {
+		if got != w {
+			t.Fatalf("step %d = %v, want %v", i, got, w)
+		}
+		got = got.Next(1)
 	}
-	if got := ApprovalNever.Next(1); got != ApprovalUntrusted {
-		t.Fatalf("never.Next(1) = %v, want untrusted", got)
+	if got != ApprovalOnRequest {
+		t.Fatalf("cycle did not wrap: %v", got)
 	}
-	if got := ApprovalUntrusted.Next(1); got != ApprovalOnRequest {
-		t.Fatalf("untrusted.Next(1) = %v, want on-request", got)
+	if back := ApprovalOnRequest.Next(-1); back != ApprovalUntrusted {
+		t.Fatalf("on-request.Next(-1) = %v, want untrusted", back)
 	}
-	if got := ApprovalOnRequest.Next(-1); got != ApprovalUntrusted {
-		t.Fatalf("on-request.Next(-1) = %v, want untrusted", got)
+}
+
+// Auto must be a real distinct posture, not a relabelled one: codewhale
+// runs policies without asking under on-failure, and cursor-agent has a
+// classifier mode. If either ever collapses onto the ask posture, this
+// fails.
+func TestApprovalAutoIsDistinct(t *testing.T) {
+	if ApprovalAuto.Flag() == ApprovalOnRequest.Flag() {
+		t.Fatal("auto and on-request share a codewhale flag")
+	}
+	if got := AgentCursor.LaunchCommand("", ApprovalAuto); !strings.Contains(got, "--auto-review") {
+		t.Fatalf("cursor auto = %q, want --auto-review", got)
+	}
+	if got := AgentCodewhale.LaunchCommand("", ApprovalAuto); !strings.Contains(got, "--approval-policy on-failure") {
+		t.Fatalf("codewhale auto = %q, want on-failure", got)
 	}
 }
 

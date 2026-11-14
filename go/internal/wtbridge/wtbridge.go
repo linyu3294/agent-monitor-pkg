@@ -118,6 +118,10 @@ type Approval int
 const (
 	// ApprovalOnRequest asks the user before acting. Default.
 	ApprovalOnRequest Approval = iota
+	// ApprovalAuto runs safe tool calls without asking and stops only
+	// when a call needs to escalate or fails. The middle ground between
+	// interrupting for everything and never asking at all.
+	ApprovalAuto
 	// ApprovalNever runs unattended, for a worktree the user opens and
 	// walks away from. Explicit opt-in only.
 	ApprovalNever
@@ -125,12 +129,15 @@ const (
 	ApprovalUntrusted
 )
 
-// approvals is the cycle order shown in the `n` modal.
-var approvals = []Approval{ApprovalOnRequest, ApprovalNever, ApprovalUntrusted}
+// approvals is the cycle order shown in the `n` modal: least to most
+// permissive, then the strictest, so ←always lands somewhere calmer.
+var approvals = []Approval{ApprovalOnRequest, ApprovalAuto, ApprovalNever, ApprovalUntrusted}
 
 // String is the label rendered in the modal.
 func (a Approval) String() string {
 	switch a {
+	case ApprovalAuto:
+		return "auto (safe calls run)"
 	case ApprovalNever:
 		return "never (unattended)"
 	case ApprovalUntrusted:
@@ -139,9 +146,16 @@ func (a Approval) String() string {
 	return "on-request"
 }
 
-// Flag is the CLI value for --approval-policy.
+// Flag is the CLI value for codewhale's --approval-policy.
+//
+// `on-failure` is the auto posture: the policy engine reports
+// requires_approval=false for ordinary commands under it, and true under
+// on-request. `codewhale --help` documents only on-request/untrusted/
+// never, but the CLI accepts on-failure (verified against 0.10.2).
 func (a Approval) Flag() string {
 	switch a {
+	case ApprovalAuto:
+		return "on-failure"
 	case ApprovalNever:
 		return "never"
 	case ApprovalUntrusted:
@@ -168,9 +182,17 @@ func (a Approval) Next(delta int) Approval {
 //
 // The sandbox stays at workspace-write so the agent can edit freely
 // inside the new worktree without reaching the rest of the machine. The
-// approval posture is whatever the user picked: `--yolo` (cursor) and
-// `--approval-policy never` (codewhale) are passed only when they chose
-// to run unattended.
+// approval posture is whatever the user picked:
+//
+//	on-request  codewhale --approval-policy on-request | cursor-agent (default)
+//	auto        codewhale --approval-policy on-failure | cursor-agent --auto-review
+//	never       codewhale --approval-policy never     | cursor-agent --yolo
+//	untrusted   codewhale --approval-policy untrusted | cursor-agent (default)
+//
+// cursor-agent is "Smart Auto" under --auto-review: a classifier runs
+// safe tool calls and prompts for the rest. It has no stricter-than-
+// default flag, so untrusted maps to its default behaviour rather than
+// inventing one.
 func (a Agent) LaunchCommand(prompt string, approval Approval) string {
 	cmd := "cursor-agent"
 	switch a {
@@ -178,7 +200,10 @@ func (a Agent) LaunchCommand(prompt string, approval Approval) string {
 		cmd = "codewhale --approval-policy " + approval.Flag() +
 			" --sandbox-mode workspace-write --skip-onboarding --fresh"
 	default:
-		if approval == ApprovalNever {
+		switch approval {
+		case ApprovalAuto:
+			cmd += " --auto-review"
+		case ApprovalNever:
 			cmd += " --yolo"
 		}
 	}
@@ -191,14 +216,15 @@ func (a Agent) LaunchCommand(prompt string, approval Approval) string {
 // Create spawns a new worktree at <branch> based on <base> and opens an
 // iTerm tab running <agent> with the chosen <approval> posture. When the
 // wt CLI is installed and the agent is cursor-agent, this shells out to
-// `wt create --iterm` (wt's tab path hardcodes cursor-agent, and --yolo is
-// added only when the user chose to run unattended). Otherwise it creates
-// `<repo>/.worktrees/<slug>` with git directly — the layout the dashboard
-// already scans — and opens the tab itself, so `n` works without the
-// worktrees skill and non-cursor launchers are not forced through wt.
-// <prompt> may be empty.
+// `wt create --iterm` — except for the auto posture, which wt cannot
+// express: it only knows `--yolo`, so routing auto through it would
+// silently give the user a different posture than the one they picked.
+// Everything else creates `<repo>/.worktrees/<slug>` with git directly —
+// the layout the dashboard already scans — and opens the tab itself, so
+// `n` works without the worktrees skill and non-cursor launchers are not
+// forced through wt. <prompt> may be empty.
 func (b *Bridge) Create(repo, branch, base, prompt string, agent Agent, approval Approval) error {
-	if b.Available() && agent == AgentCursor {
+	if b.Available() && agent == AgentCursor && approval != ApprovalAuto {
 		args := []string{"create", branch, "--base", base, "--iterm"}
 		if approval == ApprovalNever {
 			args = append(args, "--yolo")
