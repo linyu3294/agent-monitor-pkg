@@ -56,13 +56,14 @@ type confirmBar struct {
 
 // newWtForm holds the in-progress fields of the `n` modal.
 type newWtForm struct {
-	repo    textinput.Model
-	branch  textinput.Model
-	base    textinput.Model
-	prompt  textinput.Model
-	agent   wtbridge.Agent
-	focused int // 0=repo, 1=branch, 2=base, 3=agent, 4=prompt
-	err     string
+	repo     textinput.Model
+	branch   textinput.Model
+	base     textinput.Model
+	prompt   textinput.Model
+	agent    wtbridge.Agent
+	approval wtbridge.Approval
+	focused  int // 0=repo, 1=branch, 2=base, 3=agent, 4=approval, 5=prompt
+	err      string
 }
 
 // model is the bubbletea Model for the whole dashboard.
@@ -158,6 +159,9 @@ func New(opts Options, version string) *model {
 			base:   base,
 			prompt: prompt,
 			agent:  defaultAgent(),
+			// On-request: the new agent asks before it acts. Running
+			// unattended is available, but only if the user picks it.
+			approval: wtbridge.ApprovalOnRequest,
 		},
 		tombstones: map[string]struct{}{},
 		version:    version,

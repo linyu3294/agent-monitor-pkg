@@ -57,10 +57,9 @@ func (b *Bridge) Resume(id, cwd string) error {
 type Agent int
 
 const (
-	// AgentCursor launches `cursor-agent --yolo`.
+	// AgentCursor launches `cursor-agent`.
 	AgentCursor Agent = iota
-	// AgentCodewhale launches `codewhale` with an equivalent unattended
-	// posture, confined to the new worktree.
+	// AgentCodewhale launches `codewhale`, confined to the new worktree.
 	AgentCodewhale
 )
 
@@ -106,16 +105,82 @@ func (a Agent) Next(delta int) Agent {
 	return agents[idx]
 }
 
+// Approval is the tool-approval posture a newly launched agent runs
+// with. It is chosen per launch by the person using the dashboard, never
+// imposed by it: an agent that can silently run commands without asking
+// is a decision the human makes, not a default a viewer sets for them.
+//
+// The zero value is ApprovalOnRequest, so a zero-valued config, a
+// forgotten field, or a caller that predates this type all land on the
+// posture that keeps the human in the loop.
+type Approval int
+
+const (
+	// ApprovalOnRequest asks the user before acting. Default.
+	ApprovalOnRequest Approval = iota
+	// ApprovalNever runs unattended, for a worktree the user opens and
+	// walks away from. Explicit opt-in only.
+	ApprovalNever
+	// ApprovalUntrusted refuses unless the request is already trusted.
+	ApprovalUntrusted
+)
+
+// approvals is the cycle order shown in the `n` modal.
+var approvals = []Approval{ApprovalOnRequest, ApprovalNever, ApprovalUntrusted}
+
+// String is the label rendered in the modal.
+func (a Approval) String() string {
+	switch a {
+	case ApprovalNever:
+		return "never (unattended)"
+	case ApprovalUntrusted:
+		return "untrusted (strict)"
+	}
+	return "on-request"
+}
+
+// Flag is the CLI value for --approval-policy.
+func (a Approval) Flag() string {
+	switch a {
+	case ApprovalNever:
+		return "never"
+	case ApprovalUntrusted:
+		return "untrusted"
+	}
+	return "on-request"
+}
+
+// Next returns the approval delta places away, wrapping around.
+func (a Approval) Next(delta int) Approval {
+	n := len(approvals)
+	idx := 0
+	for i, cand := range approvals {
+		if cand == a {
+			idx = i
+			break
+		}
+	}
+	idx = ((idx+delta)%n + n) % n
+	return approvals[idx]
+}
+
 // LaunchCommand is the shell line typed into the new iTerm tab.
 //
-// cursor-agent gets --yolo (skip approvals) because the tab is meant to
-// run unattended. Codewhale's analogue is --approval-policy never; the
-// sandbox stays at workspace-write so the agent can edit freely inside
-// the new worktree without reaching the rest of the machine.
-func (a Agent) LaunchCommand(prompt string) string {
-	cmd := "cursor-agent --yolo"
-	if a == AgentCodewhale {
-		cmd = "codewhale --approval-policy never --sandbox-mode workspace-write --skip-onboarding --fresh"
+// The sandbox stays at workspace-write so the agent can edit freely
+// inside the new worktree without reaching the rest of the machine. The
+// approval posture is whatever the user picked: `--yolo` (cursor) and
+// `--approval-policy never` (codewhale) are passed only when they chose
+// to run unattended.
+func (a Agent) LaunchCommand(prompt string, approval Approval) string {
+	cmd := "cursor-agent"
+	switch a {
+	case AgentCodewhale:
+		cmd = "codewhale --approval-policy " + approval.Flag() +
+			" --sandbox-mode workspace-write --skip-onboarding --fresh"
+	default:
+		if approval == ApprovalNever {
+			cmd += " --yolo"
+		}
 	}
 	if strings.TrimSpace(prompt) != "" {
 		cmd += " -- " + shellQuote(prompt)
@@ -124,22 +189,26 @@ func (a Agent) LaunchCommand(prompt string) string {
 }
 
 // Create spawns a new worktree at <branch> based on <base> and opens an
-// iTerm tab running <agent>. When the wt CLI is installed and the agent is
-// cursor-agent, this shells out to `wt create --iterm --yolo` (wt's tab
-// path hardcodes cursor-agent). Otherwise it creates
+// iTerm tab running <agent> with the chosen <approval> posture. When the
+// wt CLI is installed and the agent is cursor-agent, this shells out to
+// `wt create --iterm` (wt's tab path hardcodes cursor-agent, and --yolo is
+// added only when the user chose to run unattended). Otherwise it creates
 // `<repo>/.worktrees/<slug>` with git directly — the layout the dashboard
 // already scans — and opens the tab itself, so `n` works without the
 // worktrees skill and non-cursor launchers are not forced through wt.
 // <prompt> may be empty.
-func (b *Bridge) Create(repo, branch, base, prompt string, agent Agent) error {
+func (b *Bridge) Create(repo, branch, base, prompt string, agent Agent, approval Approval) error {
 	if b.Available() && agent == AgentCursor {
-		args := []string{"create", branch, "--base", base, "--iterm", "--yolo"}
+		args := []string{"create", branch, "--base", base, "--iterm"}
+		if approval == ApprovalNever {
+			args = append(args, "--yolo")
+		}
 		if prompt != "" {
 			args = append(args, "--prompt", prompt)
 		}
 		return runIn(repo, b.bin, args...)
 	}
-	return createWithGit(repo, branch, base, prompt, agent)
+	return createWithGit(repo, branch, base, prompt, agent, approval)
 }
 
 // GitPrimary returns the main checkout for the git repo containing dir.
@@ -187,7 +256,7 @@ func expandUserPath(dir string) string {
 	return filepath.Clean(dir)
 }
 
-func createWithGit(repo, branch, base, prompt string, agent Agent) error {
+func createWithGit(repo, branch, base, prompt string, agent Agent, approval Approval) error {
 	top := GitPrimary(repo)
 	if top == "" {
 		return fmt.Errorf("not a git repo: %s", repo)
@@ -211,7 +280,7 @@ func createWithGit(repo, branch, base, prompt string, agent Agent) error {
 	if os.Getenv("WT_NO_OPEN") == "1" {
 		return nil
 	}
-	if err := OpenITerm(dest, agent.LaunchCommand(prompt)); err != nil {
+	if err := OpenITerm(dest, agent.LaunchCommand(prompt, approval)); err != nil {
 		return fmt.Errorf("worktree created at %s, but opening iTerm failed: %w", dest, err)
 	}
 	return nil

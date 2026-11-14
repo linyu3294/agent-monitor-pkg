@@ -230,3 +230,59 @@ func run(t *testing.T, dir string, name string, args ...string) {
 		t.Fatalf("%s %v: %v\n%s", name, args, err, out)
 	}
 }
+
+// TestNewWorktreeApprovalDefaultsToAsk is the regression guard for the
+// launch posture: a new agent must ask the user before acting, and only
+// run unattended if the user explicitly selects it.
+func TestNewWorktreeApprovalDefaultsToAsk(t *testing.T) {
+	stubDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stubDir, "codewhale"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	m := New(Options{RefreshInterval: time.Second, IdleThreshold: time.Hour, MaxCards: 10}, "test")
+	var mdl tea.Model = m
+	mdl, _ = mdl.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	mdl, _ = mdl.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	mm := mdl.(*model)
+
+	if mm.form.approval != wtbridge.ApprovalOnRequest {
+		t.Fatalf("default approval = %v, want on-request", mm.form.approval)
+	}
+	view := mm.View()
+	if testing.Verbose() {
+		t.Logf("modal:\n%s", view)
+	}
+	if !strings.Contains(view, "on-request") {
+		t.Fatalf("modal does not show the approval row:\n%s", view)
+	}
+	if strings.Contains(view, "will not stop to ask you") {
+		t.Fatal("modal warns about unattended mode before it was selected")
+	}
+
+	// Tab until the approval row has focus. The starting field depends on
+	// whether a repo could be inferred from the selected card, so the
+	// test must not hardcode it.
+	for i := 0; mm.form.focused != 4; i++ {
+		if i > newWtFields {
+			t.Fatalf("never reached the approval row (focused = %d)", mm.form.focused)
+		}
+		mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyTab})
+		mm = mdl.(*model)
+	}
+	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRight})
+	mm = mdl.(*model)
+	if mm.form.approval != wtbridge.ApprovalNever {
+		t.Fatalf("approval after → = %v, want never", mm.form.approval)
+	}
+	if !strings.Contains(mm.View(), "will not stop to ask you") {
+		t.Fatalf("no warning after choosing unattended:\n%s", mm.View())
+	}
+
+	// The chosen posture reaches the launcher: never -> explicit never.
+	cmd := mm.form.agent.LaunchCommand("", mm.form.approval)
+	if !strings.Contains(cmd, "--approval-policy never") {
+		t.Fatalf("launch command = %q, want --approval-policy never", cmd)
+	}
+}

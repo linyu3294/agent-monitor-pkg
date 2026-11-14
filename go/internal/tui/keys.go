@@ -458,6 +458,7 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		base := strings.TrimSpace(m.form.base.Value())
 		prompt := m.form.prompt.Value()
 		agent := m.form.agent
+		approval := m.form.approval
 		if repo == "" {
 			m.form.err = "repo path is required — this workspace is not a git repo"
 			m.focusNewWt(0)
@@ -492,11 +493,11 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.runWtCmd(
 			fmt.Sprintf("created worktree %s with %s", branch, agent),
-			func() error { return m.wt.Create(top, branch, base, prompt, agent) },
+			func() error { return m.wt.Create(top, branch, base, prompt, agent, approval) },
 		)
 	}
-	// The agent field is a selector, not a text input: ←/→ (or h/l, space)
-	// cycle the launcher instead of typing into it.
+	// The agent and approval fields are selectors, not text inputs:
+	// ←/→ (or h/l, space) cycle them instead of typing into them.
 	if m.form.focused == 3 {
 		switch key {
 		case "left", "h":
@@ -504,6 +505,17 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.form.err = ""
 		case "right", "l", " ":
 			m.form.agent = m.form.agent.Next(1)
+			m.form.err = ""
+		}
+		return m, nil
+	}
+	if m.form.focused == 4 {
+		switch key {
+		case "left", "h":
+			m.form.approval = m.form.approval.Next(-1)
+			m.form.err = ""
+		case "right", "l", " ":
+			m.form.approval = m.form.approval.Next(1)
 			m.form.err = ""
 		}
 		return m, nil
@@ -518,7 +530,7 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.form.branch, cmd = m.form.branch.Update(msg)
 	case 2:
 		m.form.base, cmd = m.form.base.Update(msg)
-	case 4:
+	case 5:
 		m.form.prompt, cmd = m.form.prompt.Update(msg)
 	}
 	return m, cmd
@@ -537,13 +549,17 @@ func (m *model) focusNewWt(idx int) {
 		m.form.branch.Focus()
 	case 2:
 		m.form.base.Focus()
-	case 4:
+	case 5:
 		m.form.prompt.Focus()
 	}
 }
 
+// newWtFields is the number of focusable fields in the modal:
+// repo, branch, base, agent, approval, prompt.
+const newWtFields = 6
+
 func (m *model) cycleNewWtFocus(delta int) {
-	m.focusNewWt((m.form.focused + delta + 5) % 5)
+	m.focusNewWt((m.form.focused + delta + newWtFields) % newWtFields)
 }
 
 // short returns the first 8 chars of a UUID for compact status messages.

@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/agent-monitor/agent-monitor/internal/session"
+	"github.com/agent-monitor/agent-monitor/internal/wtbridge"
 )
 
 // Dracula-inspired accent palette. Centralized so re-theming is one
@@ -414,7 +415,8 @@ Multi-agent
   i    open nvim + Diffview (worktree only)
 
 Worktree lifecycle
-  n    new worktree (repo / branch / base / agent / prompt)
+  n    new worktree (repo / branch / base / agent / approval / prompt)
+       approval defaults to on-request: the agent asks before acting
   r    remove selected (y/N confirm)
   s    wt sync (rebase onto base)
 
@@ -448,6 +450,7 @@ func (m *model) viewNewWt() string {
 	b.WriteString("branch: " + m.form.branch.View() + "\n")
 	b.WriteString("base:   " + m.form.base.View() + "\n")
 	b.WriteString("agent:  " + m.viewAgentField() + "\n")
+	b.WriteString("asks:   " + m.viewApprovalField() + "\n")
 	b.WriteString("prompt: " + m.form.prompt.View() + "\n")
 	if m.form.err != "" {
 		b.WriteString("\n")
@@ -456,6 +459,10 @@ func (m *model) viewNewWt() string {
 	}
 	b.WriteString("\n")
 	b.WriteString(styleDim.Render("repo is the git checkout · base defaults to origin/main · agent is the CLI launched in the new tab"))
+	if m.form.approval == wtbridge.ApprovalNever {
+		b.WriteString("\n")
+		b.WriteString(styleConfirm.Render("unattended: the new agent will not stop to ask you before it acts"))
+	}
 	return m.centerInModal(b.String())
 }
 
@@ -467,6 +474,20 @@ func (m *model) viewAgentField() string {
 	styled := styleValue.Render(value)
 	hint := ""
 	if m.form.focused == 3 {
+		styled = styleSel.Render(value)
+		hint = "  " + styleDim.Render("←/→")
+	}
+	return styleDim.Render("‹") + " " + styled + " " + styleDim.Render("›") + hint
+}
+
+// viewApprovalField renders the approval selector. It is a first-class
+// field rather than a hidden constant so the person creating the
+// worktree decides whether the agent may act without asking.
+func (m *model) viewApprovalField() string {
+	value := m.form.approval.String()
+	styled := styleValue.Render(value)
+	hint := ""
+	if m.form.focused == 4 {
 		styled = styleSel.Render(value)
 		hint = "  " + styleDim.Render("←/→")
 	}

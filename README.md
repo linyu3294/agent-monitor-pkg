@@ -53,7 +53,7 @@ Re-run `install.sh` any time — it's idempotent.
 | `y` | copy chat id to clipboard |
 | `o` | open worktree in Cursor |
 | `i` | open nvim + Diffview iTerm tab |
-| `n` | new worktree (modal: repo / branch / base / agent / prompt) |
+| `n` | new worktree (modal: repo / branch / base / agent / approval / prompt) |
 | `r` | kill agent (and remove worktree if attached) |
 | `s` | `wt sync` — rebase onto base |
 | `x` | pause / resume the selected agent (`SIGSTOP` / `SIGCONT`) |
@@ -66,10 +66,20 @@ Re-run `install.sh` any time — it's idempotent.
 
 `n` opens a new worktree and launches the chosen CLI in the tab. When `codewhale`
 is on `PATH` the agent field defaults to it, so the common case needs no extra
-keystroke; `←` / `→` switch to `cursor-agent`. Codewhale is launched unattended —
-`--approval-policy never --sandbox-mode workspace-write` — so it works in its own
-worktree without stopping for approvals, while the sandbox keeps it out of the
-rest of the machine.
+keystroke; `←` / `→` switch to `cursor-agent`.
+
+The `asks:` field is the approval posture, and **it is yours to choose** — the
+dashboard never switches it for you. It defaults to `on-request`, so a new agent
+stops and asks before it acts. `←` / `→` cycles:
+
+- `on-request` — ask before acting (default)
+- `never (unattended)` — run without stopping, for a worktree you open and walk away from. The modal warns when you select it.
+- `untrusted (strict)` — refuse unless already trusted
+
+The posture maps to `--approval-policy <value>` for codewhale and to `--yolo` for
+`cursor-agent`, so `--yolo` now appears only when you pick unattended. The sandbox
+stays `workspace-write` either way: the agent edits freely inside its worktree and
+still can't reach the rest of the machine.
 
 ## What it watches
 
