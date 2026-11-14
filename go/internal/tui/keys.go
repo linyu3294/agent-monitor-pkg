@@ -239,26 +239,30 @@ func (m *model) handleOpen() (tea.Model, tea.Cmd) {
 	if s == nil {
 		return m, nil
 	}
+	if s.WorktreeSlug == "" {
+		// A primary card opens whatever directory the agent ran in, even
+		// when that directory is not itself a repo — a Cursor window on
+		// ~/Documents is the common case.
+		dir := sessionWorkspace(s)
+		if dir == "" {
+			return m, m.flashConfirm("can't resolve the workspace for this session", s.Project)
+		}
+		return m, m.runWtCmd(
+			fmt.Sprintf("opening %s in Cursor", dir),
+			func() error { return exec.Command("cursor", dir).Start() },
+		)
+	}
 	primary := sessionPrimary(s)
 	if primary == "" {
 		return m, m.flashConfirm("can't resolve the repo for this session", s.Project)
 	}
 	slug := s.WorktreeSlug
-	if slug != "" {
-		if real := scanner.SlugFromEncoded(primary, slug); real != "" {
-			slug = real
-		}
+	if real := scanner.SlugFromEncoded(primary, slug); real != "" {
+		slug = real
 	}
-	repo := primary
 	return m, m.runWtCmd(
-		fmt.Sprintf("opening %s in Cursor", repo),
-		func() error {
-			if slug != "" {
-				return m.wt.Open(repo, slug)
-			}
-			// No slug → fall back to the cursor CLI on the primary.
-			return exec.Command("cursor", repo).Start()
-		},
+		fmt.Sprintf("opening %s in Cursor", primary),
+		func() error { return m.wt.Open(primary, slug) },
 	)
 }
 

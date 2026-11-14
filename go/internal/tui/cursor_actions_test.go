@@ -17,6 +17,17 @@ import (
 // worktree: a transcript on disk at the path Cursor uses, the encoded
 // project dir, and a CWD hint only when the transcript states one.
 func cursorWorktreeSession(t *testing.T, slug string, withCWDHint bool) (primary string, sess session.Session) {
+	return cursorWorktreeSessionWithHint(t, slug, func(p string) string {
+		if !withCWDHint {
+			return ""
+		}
+		return filepath.Join(p, ".worktrees", slug)
+	})
+}
+
+// cursorWorktreeSessionWithHint builds the same session but lets the
+// caller decide what the transcript's cwd observation says.
+func cursorWorktreeSessionWithHint(t *testing.T, slug string, hint func(primary string) string) (primary string, sess session.Session) {
 	t.Helper()
 	primary, _ = tuiRepoWithWorktree(t, slug)
 	id := "11111111-2222-3333-4444-555555555555"
@@ -47,8 +58,8 @@ func cursorWorktreeSession(t *testing.T, slug string, withCWDHint bool) (primary
 		LastTool:       "Shell",
 		State:          session.StateActive,
 	}
-	if withCWDHint {
-		sess.CWDHint = filepath.Join(primary, ".worktrees", slug)
+	if hint != nil {
+		sess.CWDHint = hint(primary)
 	}
 	return primary, sess
 }
@@ -272,5 +283,97 @@ func TestCursorCopyID(t *testing.T) {
 	mdl, _ := drive(t, newTestModel(sess), tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 	if !strings.Contains(mdl.confirm.subtitle, sess.ID) {
 		t.Fatalf("confirm = %q, want the copied id %q", mdl.confirm.subtitle, sess.ID)
+	}
+}
+
+// A real card's transcript recorded a `cd` into the cursor-agent install
+// directory, not the workspace. Trusting that observation made removal
+// look for `.worktrees/<slug>` inside
+// ~/.local/share/cursor-agent/versions/<v> and fail. For a worktree
+// session the encoded project dir is authoritative; a shell cwd is only
+// a hint.
+func TestCursorResolutionIgnoresMisleadingCWDHint(t *testing.T) {
+	guiStubPATH(t)
+	// Stand in for the agent's own install directory: a real directory
+	// that exists but is not the workspace and is not a git repo.
+	installDir := filepath.Join(t.TempDir(), "cursor-agent", "versions", "2026.11.05-86047df")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	primary, sess := cursorWorktreeSessionWithHint(t, "feat-Bionic", func(string) string {
+		return installDir
+	})
+
+	wantWT := filepath.Join(primary, ".worktrees", "feat-Bionic")
+	if got := sessionWorkspace(&sess); got != wantWT {
+		t.Fatalf("sessionWorkspace = %q, want the worktree %q", got, wantWT)
+	}
+	if got := sessionPrimary(&sess); got != primary {
+		t.Fatalf("sessionPrimary = %q, want %q", got, primary)
+	}
+	m := newTestModel(sess)
+	if got := m.resolveRepoPath(&sess); got != wantWT {
+		t.Fatalf("resolveRepoPath = %q, want %q", got, wantWT)
+	}
+
+	// Removal must act on the worktree, not the install directory.
+	_, cmd := drive(t, m,
+		tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}},
+		tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}},
+	)
+	for _, r := range results(cmd) {
+		if r.failed {
+			t.Fatalf("remove failed: %s", r.subtitle)
+		}
+	}
+	if _, err := os.Stat(wantWT); !os.IsNotExist(err) {
+		t.Fatalf("worktree still on disk: %v", err)
+	}
+	if _, err := os.Stat(installDir); err != nil {
+		t.Fatalf("the install directory was disturbed: %v", err)
+	}
+}
+
+// A session whose workspace is not a repo at all must not report a
+// primary checkout — callers treat that value as a base for
+// `.worktrees/` lookups, so a wrong answer sends them elsewhere.
+func TestNonRepoWorkspaceHasNoPrimary(t *testing.T) {
+	plain := t.TempDir()
+	sess := session.Session{
+		ID:         "x",
+		Source:     session.SourceCursor,
+		ProjectDir: scanner.EncodeForCursor(strings.TrimPrefix(plain, "/")),
+		CWDHint:    plain,
+	}
+	if got := sessionPrimary(&sess); got != "" {
+		t.Fatalf("sessionPrimary = %q, want empty for a non-repo workspace", got)
+	}
+	if got := sessionWorkspace(&sess); got != plain {
+		t.Fatalf("sessionWorkspace = %q, want %q", got, plain)
+	}
+}
+
+// A primary card whose transcript recorded a cd into the agent's own
+// install tree must fall back to the encoded project dir, not resume
+// into the binary directory.
+func TestPrimarySessionIgnoresAgentRuntimeHint(t *testing.T) {
+	primary, _ := tuiRepoWithWorktree(t, "unused")
+	installDir := filepath.Join(t.TempDir(), ".local", "share", "cursor-agent", "versions", "2026.11.05-86047df")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	sess := session.Session{
+		ID:         "x",
+		Source:     session.SourceCursor,
+		ProjectDir: scanner.EncodeForCursor(strings.TrimPrefix(primary, "/")),
+		CWDHint:    installDir,
+	}
+	if got := sessionWorkspace(&sess); got != primary {
+		t.Fatalf("sessionWorkspace = %q, want the repo %q", got, primary)
+	}
+	if got := sessionPrimary(&sess); got != primary {
+		t.Fatalf("sessionPrimary = %q, want %q", got, primary)
 	}
 }

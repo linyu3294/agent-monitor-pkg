@@ -320,82 +320,98 @@ func (m *model) selectedSession() *session.Session {
 	return &m.sessions[m.selected]
 }
 
+// agentRuntimeDirs are path segments belonging to the agent CLIs
+// themselves. A transcript's `cd` can land in one of these (a real card
+// recorded ~/.local/share/cursor-agent/versions/<v> as its cwd), and no
+// agent session's workspace is ever inside its own install tree.
+var agentRuntimeDirs = []string{
+	"/.local/share/cursor-agent/",
+	"/.cursor/",
+	"/.codewhale/",
+	"/.claude/",
+}
+
+func looksLikeAgentRuntimePath(p string) bool {
+	withSlash := p + "/"
+	for _, dir := range agentRuntimeDirs {
+		if strings.Contains(withSlash, dir) {
+			return true
+		}
+	}
+	return false
+}
+
 // sessionWorkspace returns the directory the agent actually ran in, or
 // "" when it can't be established.
 //
-// CWDHint is the exact path a Codewhale log states, or the shell cwd a
-// Cursor transcript records, so it beats decoding the encoded project
-// dir — that encoding collapses `_`, `/` and `-` into the same character
-// and cannot always be inverted. Every action that touches the
-// filesystem should start here.
+// Precedence is deliberate, and the order matters:
+//
+//  1. For a worktree session the encoded project dir is authoritative —
+//     Cursor encoded the workspace it opened, and resolving the real slug
+//     against `.worktrees/` recovers the exact path.
+//  2. CWDHint is only a shell-command observation. A transcript's `cd`
+//     can point at anything the agent touched, including its own install
+//     directory; a real card had CWDHint = ~/.local/share/cursor-agent/
+//     versions/<v>, and trusting it made removal hunt for
+//     `.worktrees/<slug>` inside the Cursor binary directory.
+//  3. Decoded project dir last, for primary sessions whose ProjectDir is
+//     a parent folder rather than a repo.
 func sessionWorkspace(s *session.Session) string {
 	if s == nil {
 		return ""
 	}
-	if s.CWDHint != "" {
+	primary := scanner.DecodeProjectPath(s.ProjectDir)
+	if s.WorktreeSlug != "" && primary != "" {
+		if real := scanner.SlugFromEncoded(primary, s.WorktreeSlug); real != "" {
+			wt := filepath.Join(primary, ".worktrees", real)
+			if st, err := os.Stat(wt); err == nil && st.IsDir() {
+				return wt
+			}
+		}
+		return primary
+	}
+	if s.CWDHint != "" && !looksLikeAgentRuntimePath(s.CWDHint) {
 		if st, err := os.Stat(s.CWDHint); err == nil && st.IsDir() {
 			return s.CWDHint
 		}
 	}
-	return scanner.DecodeProjectPath(s.ProjectDir)
+	return primary
 }
 
-// sessionPrimary returns the primary checkout for a session: the repo
-// that owns its worktree, or the checkout itself when it has none.
+// sessionPrimary returns the primary git checkout that owns the session,
+// or "" when the session is not inside a repository.
+//
+// Returning a non-repo directory here is a trap: callers use it as a
+// base for `.worktrees/<slug>` operations, so a wrong answer sends those
+// lookups somewhere unrelated instead of failing cleanly.
 func sessionPrimary(s *session.Session) string {
 	ws := sessionWorkspace(s)
 	if ws == "" {
 		return ""
 	}
-	if primary := wtbridge.GitPrimary(ws); primary != "" {
-		return primary
-	}
-	return ws
+	return wtbridge.GitPrimary(ws)
 }
 
-// resolveRepoPath returns the on-disk workspace root for the given
-// session (worktree path for worktree-rooted sessions, primary repo
-// otherwise). Returns "" if it can't be resolved.
+// resolveRepoPath returns the directory to act on for this session: the
+// worktree for a worktree-rooted session, the checkout for a primary one.
 func (m *model) resolveRepoPath(s *session.Session) string {
-	ws := sessionWorkspace(s)
-	primary := ""
-	if ws != "" {
-		if p := wtbridge.GitPrimary(ws); p != "" {
-			primary = p
-		}
-	}
-	if primary == "" {
-		primary = scanner.DecodeProjectPath(s.ProjectDir)
-	}
-	if primary == "" && ws == "" {
+	if s == nil {
 		return ""
 	}
-	if s.WorktreeSlug == "" {
-		if primary != "" {
-			return primary
-		}
-		return ws
-	}
-	// The session's own workspace is the worktree it ran in.
-	if ws != "" && filepath.Base(filepath.Dir(ws)) == ".worktrees" {
-		return ws
-	}
-	// Translate the encoded slug into an actual on-disk slug.
-	if primary != "" {
-		if real := scanner.SlugFromEncoded(primary, s.WorktreeSlug); real != "" {
-			p := filepath.Join(primary, ".worktrees", real)
-			if _, err := os.Stat(p); err == nil {
+	if s.WorktreeSlug != "" {
+		if primary := sessionPrimary(s); primary != "" {
+			if real := scanner.SlugFromEncoded(primary, s.WorktreeSlug); real != "" {
+				p := filepath.Join(primary, ".worktrees", real)
+				if st, err := os.Stat(p); err == nil && st.IsDir() {
+					return p
+				}
+			}
+			if p, err := m.wt.PathFor(primary, s.WorktreeSlug); err == nil && p != "" {
 				return p
 			}
 		}
-		if p, err := m.wt.PathFor(primary, s.WorktreeSlug); err == nil && p != "" {
-			return p
-		}
 	}
-	if ws != "" {
-		return ws
-	}
-	return primary
+	return sessionWorkspace(s)
 }
 
 // runWtCmd is a small helper that turns a wtbridge call into a
