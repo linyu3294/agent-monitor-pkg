@@ -465,7 +465,7 @@ func (m *model) viewNewWt() string {
 	}
 	if m.form.approval == wtbridge.ApprovalAuto {
 		b.WriteString("\n")
-		b.WriteString(styleDim.Render("auto: safe tool calls run without asking · anything risky still stops for you"))
+		b.WriteString(styleDim.Render("auto: the agent applies its own approval policy · on-request asks you every time"))
 	}
 	return m.centerInModal(b.String())
 }

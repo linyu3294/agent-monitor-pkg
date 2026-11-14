@@ -73,7 +73,7 @@ dashboard never switches it for you. It defaults to `on-request`, so a new agent
 stops and asks before it acts. `←` / `→` cycles:
 
 - `on-request` — ask before acting (default)
-- `auto (safe calls run)` — run safe tool calls without stopping; anything risky still stops for you
+- `auto` — the agent applies codewhale's own auto approval policy; `on-request` asks you every time
 - `never (unattended)` — run without stopping at all, for a worktree you open and walk away from. The modal warns when you select it.
 - `untrusted (strict)` — refuse unless already trusted
 
@@ -82,7 +82,7 @@ The posture maps per CLI, so each agent uses the closest thing it actually has:
 | Posture | codewhale | cursor-agent |
 |---|---|---|
 | `on-request` | `--approval-policy on-request` | default |
-| `auto` | `--approval-policy on-failure` | `--auto-review` (Smart Auto) |
+| `auto` | `--approval-policy auto` | `--auto-review` (Smart Auto) |
 | `never` | `--approval-policy never` | `--yolo` |
 | `untrusted` | `--approval-policy untrusted` | default (no stricter flag exists) |
 

@@ -122,9 +122,9 @@ type Approval int
 const (
 	// ApprovalOnRequest asks the user before acting. Default.
 	ApprovalOnRequest Approval = iota
-	// ApprovalAuto runs safe tool calls without asking and stops only
-	// when a call needs to escalate or fails. The middle ground between
-	// interrupting for everything and never asking at all.
+	// ApprovalAuto hands approval decisions to the agent's own policy —
+	// the middle ground between being asked about everything and never
+	// being asked at all.
 	ApprovalAuto
 	// ApprovalNever runs unattended, for a worktree the user opens and
 	// walks away from. Explicit opt-in only.
@@ -141,7 +141,7 @@ var approvals = []Approval{ApprovalOnRequest, ApprovalAuto, ApprovalNever, Appro
 func (a Approval) String() string {
 	switch a {
 	case ApprovalAuto:
-		return "auto (safe calls run)"
+		return "auto"
 	case ApprovalNever:
 		return "never (unattended)"
 	case ApprovalUntrusted:
@@ -152,14 +152,22 @@ func (a Approval) String() string {
 
 // Flag is the CLI value for codewhale's --approval-policy.
 //
-// `on-failure` is the auto posture: the policy engine reports
-// requires_approval=false for ordinary commands under it, and true under
-// on-request. `codewhale --help` documents only on-request/untrusted/
-// never, but the CLI accepts on-failure (verified against 0.10.2).
+// The accepted enum is exactly: on-request, untrusted, never, auto,
+// suggest. Verified against the installed binary via
+// `codewhale --approval-policy <v> doctor`, which reports the same
+// validation error the launch path does.
+//
+// This must not be confused with `codewhale sandbox check --ask`, which
+// takes a *different* set (unless-trusted, on-failure, on-request,
+// never). Mapping auto to `on-failure` because the sandbox checker
+// accepts it produced a launch that failed immediately with "Invalid
+// approval_policy 'on-failure'". Note also that `codewhale
+// --approval-policy <anything> sessions list` exits 0 — the subversion
+// path does not validate the global option, so it is not a usable check.
 func (a Approval) Flag() string {
 	switch a {
 	case ApprovalAuto:
-		return "on-failure"
+		return "auto"
 	case ApprovalNever:
 		return "never"
 	case ApprovalUntrusted:
@@ -189,9 +197,9 @@ func (a Approval) Next(delta int) Approval {
 // approval posture is whatever the user picked:
 //
 //	on-request  codewhale --approval-policy on-request | cursor-agent (default)
-//	auto        codewhale --approval-policy on-failure | cursor-agent --auto-review
-//	never       codewhale --approval-policy never     | cursor-agent --yolo
-//	untrusted   codewhale --approval-policy untrusted | cursor-agent (default)
+//	auto        codewhale --approval-policy auto        | cursor-agent --auto-review
+//	never       codewhale --approval-policy never       | cursor-agent --yolo
+//	untrusted   codewhale --approval-policy untrusted   | cursor-agent (default)
 //
 // cursor-agent is "Smart Auto" under --auto-review: a classifier runs
 // safe tool calls and prompts for the rest. It has no stricter-than-
