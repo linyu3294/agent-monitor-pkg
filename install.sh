@@ -180,10 +180,20 @@ fi
 chmod +x "$AM_HOME/am" 2>/dev/null || true
 
 # Symlink $AM_HOME/am → ~/.local/bin/am, replacing any existing link.
+#
+# Skip the write when the link already points here: re-installing is meant
+# to be safe and quiet, and some setups (a locked-down ~/.local/bin, a
+# symlink managed by another tool) refuse the write even though nothing
+# needs to change. Exiting non-zero there would report a failure for an
+# install that is already correct.
 local_bin="$HOME/.local/bin"
 mkdir -p "$local_bin"
-ln -sf "$AM_HOME/am" "$local_bin/am"
-step "symlinked $local_bin/am → $AM_HOME/am"
+if [[ -L "$local_bin/am" && "$(readlink "$local_bin/am")" == "$AM_HOME/am" ]]; then
+  step "symlink already correct: $local_bin/am → $AM_HOME/am"
+else
+  ln -sf "$AM_HOME/am" "$local_bin/am"
+  step "symlinked $local_bin/am → $AM_HOME/am"
+fi
 
 # PATH check. We deliberately do NOT edit shell rc files; print an
 # instruction instead.
