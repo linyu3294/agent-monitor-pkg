@@ -104,7 +104,7 @@ func TestLaunchCommand(t *testing.T) {
 		},
 		{
 			"codewhale auto", AgentCodewhale, ApprovalAuto, "",
-			"codewhale --approval-policy on-failure --sandbox-mode workspace-write --skip-onboarding --fresh",
+			"codewhale --approval-policy auto --sandbox-mode workspace-write --skip-onboarding --fresh",
 		},
 		{
 			"codewhale unattended only when chosen", AgentCodewhale, ApprovalNever, "",
@@ -161,10 +161,10 @@ func TestApprovalNextCycles(t *testing.T) {
 	}
 }
 
-// Auto must be a real distinct posture, not a relabelled one: codewhale
-// runs policies without asking under on-failure, and cursor-agent has a
-// classifier mode. If either ever collapses onto the ask posture, this
-// fails.
+// Auto must be a real distinct posture, not a relabelled one, and it
+// must use a value the CLI actually accepts. `on-failure` belongs to the
+// `sandbox check --ask` enum, not `--approval-policy`; launching with it
+// fails immediately.
 func TestApprovalAutoIsDistinct(t *testing.T) {
 	if ApprovalAuto.Flag() == ApprovalOnRequest.Flag() {
 		t.Fatal("auto and on-request share a codewhale flag")
@@ -172,8 +172,11 @@ func TestApprovalAutoIsDistinct(t *testing.T) {
 	if got := AgentCursor.LaunchCommand("", ApprovalAuto); !strings.Contains(got, "--auto-review") {
 		t.Fatalf("cursor auto = %q, want --auto-review", got)
 	}
-	if got := AgentCodewhale.LaunchCommand("", ApprovalAuto); !strings.Contains(got, "--approval-policy on-failure") {
-		t.Fatalf("codewhale auto = %q, want on-failure", got)
+	if got := AgentCodewhale.LaunchCommand("", ApprovalAuto); !strings.Contains(got, "--approval-policy auto") {
+		t.Fatalf("codewhale auto = %q, want --approval-policy auto", got)
+	}
+	if got := ApprovalAuto.Flag(); got != "auto" {
+		t.Fatalf("ApprovalAuto.Flag() = %q, want auto", got)
 	}
 }
 
@@ -211,5 +214,61 @@ func runGitTest(t *testing.T, dir string, args ...string) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// TestApprovalFlagsAcceptedByCodewhale validates the flags we generate
+// against the installed CLI instead of against our own assumptions.
+//
+// `codewhale --approval-policy <v> doctor` is a read-only command that
+// runs the same enum validation the launch path does, so it is a safe
+// way to catch a wrong value without spawning an agent. Skipped when
+// codewhale is not installed.
+//
+// This test exists because the auto posture was once mapped to
+// `on-failure` — a value from the unrelated `sandbox check --ask` enum.
+// `sessions list` accepted it (it never validates the global option),
+// so the mistake survived until a real launch failed.
+func TestApprovalFlagsAcceptedByCodewhale(t *testing.T) {
+	bin, err := exec.LookPath("codewhale")
+	if err != nil {
+		t.Skip("codewhale not on PATH")
+	}
+	for _, a := range approvals {
+		a := a
+		t.Run(a.String(), func(t *testing.T) {
+			cmd := exec.Command(bin, "--approval-policy", a.Flag(), "doctor")
+			out, err := cmd.CombinedOutput()
+			if err != nil && strings.Contains(string(out), "Invalid approval_policy") {
+				t.Fatalf("codewhale rejects --approval-policy %q:\n%s", a.Flag(), out)
+			}
+		})
+	}
+}
+
+// The flags must come out in the order codewhale parses them: global
+// options before any subcommand or prompt.
+func TestCodewhaleLaunchFlagOrder(t *testing.T) {
+	got := AgentCodewhale.LaunchCommand("do the thing", ApprovalAuto)
+	tokens := strings.Fields(got)
+	policyAt, sandboxAt, sepAt := -1, -1, -1
+	for i, tok := range tokens {
+		switch tok {
+		case "--approval-policy":
+			policyAt = i
+		case "--sandbox-mode":
+			sandboxAt = i
+		case "--":
+			sepAt = i
+		}
+	}
+	if policyAt < 0 || sandboxAt < 0 || sepAt < 0 {
+		t.Fatalf("launch command missing a required token: %q", got)
+	}
+	if policyAt > sepAt || sandboxAt > sepAt {
+		t.Fatalf("a global option was placed after the prompt separator: %q", got)
+	}
+	if tokens[policyAt+1] != "auto" {
+		t.Fatalf("approval policy token = %q, want auto", tokens[policyAt+1])
 	}
 }
