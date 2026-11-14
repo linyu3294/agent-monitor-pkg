@@ -25,6 +25,23 @@ type View interface {
 	IsPaused(chatID string) bool
 }
 
+// trustsLiveProcess reports whether a live process is stronger evidence
+// than the transcript clock.
+//
+// For Codewhale it is, and the reason is mechanical rather than stylistic:
+// a session counts as live only when a codewhale process holds its
+// live-marker file descriptor open, which a dead session cannot do. The
+// log, meanwhile, is rewritten per turn, so its mtime lags real work by
+// however long the current turn's tools take. Deferring to the clock
+// there produces the worst kind of wrong answer — an agent running a
+// long command shows IDLE.
+//
+// Cursor keeps the clock rule: its pids can idle without recording
+// anything, so a stale transcript there means an idle chat.
+func trustsLiveProcess(s session.Session) bool {
+	return s.Source == session.SourceCodewhale
+}
+
 // Classify returns the visible state for a session given the current
 // process snapshot.
 func Classify(s session.Session, p View) session.State {
@@ -38,8 +55,15 @@ func Classify(s session.Session, p View) session.State {
 	}
 	now := time.Now().Unix()
 	delta := now - s.Mtime
-	if delta > 120 {
+	if delta > 120 && !trustsLiveProcess(s) {
 		// Stale beyond the threshold — IDLE regardless of role.
+		//
+		// This rule exists because a Cursor pid can outlive its work
+		// without touching its transcript, so the clock is the honest
+		// signal there. It does not hold for Codewhale, whose log is
+		// written per turn: a long tool call leaves the file untouched
+		// for minutes while the agent is unmistakably working. See
+		// trustsLiveProcess.
 		return session.StateIdle
 	}
 	// Within a 5-second grace window the file may be mid-flush, so we

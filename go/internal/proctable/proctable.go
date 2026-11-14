@@ -17,6 +17,9 @@
 // a singleton per workspace, so signaling it would affect every sibling
 // chat. The user-facing process is per-chat, so per-chat pause / resume
 // / kill works cleanly.
+//
+// Codewhale sessions have no equivalent open file; they are bound
+// through their runtime ownership record instead. See codewhale.go.
 package proctable
 
 import (
@@ -28,7 +31,8 @@ import (
 	"syscall"
 )
 
-// Process represents one live user-facing cursor-agent process.
+// Process represents one live user-facing agent process (Cursor or
+// Codewhale).
 type Process struct {
 	PID       int
 	State     byte // ps stat letter: 'R' running, 'S' sleeping, 'T' stopped
@@ -37,12 +41,24 @@ type Process struct {
 
 // Table maps chat id (UUID string) → Process.
 type Table struct {
-	byChat map[string]Process
+	byChat       map[string]Process
+	codewhaleDir string
 }
 
 // New returns an empty table. Call Refresh before reading.
 func New() *Table {
-	return &Table{byChat: make(map[string]Process)}
+	return &Table{
+		byChat:       make(map[string]Process),
+		codewhaleDir: defaultCodewhaleDir(),
+	}
+}
+
+// agentProc is one live agent process found in this tick's ps snapshot.
+type agentProc struct {
+	pid       int
+	state     byte
+	wtManager bool
+	codewhale bool
 }
 
 // Refresh rebuilds the chat → process mapping. Cheap enough to call once
@@ -54,15 +70,16 @@ func (t *Table) Refresh() {
 	// canonical single-letter status (R/S/T/Z/...).
 	psOut, err := exec.Command("ps", "-Awwo", "pid=,state=,command=").Output()
 	if err != nil {
+		// Restricted or sandboxed environments can deny ps while still
+		// allowing lsof. Codewhale sessions remain discoverable without
+		// the process table; Cursor chats need ps for their pid list, so
+		// they degrade to "not live" rather than to a wrong answer.
+		t.bindCodewhaleViaLsof()
 		return
 	}
 
-	type cand struct {
-		pid       int
-		state     byte
-		wtManager bool
-	}
-	var cands []cand
+	var procs []agentProc
+	liveCodewhale := map[int]byte{}
 
 	for _, raw := range bytes.Split(psOut, []byte{'\n'}) {
 		line := bytes.TrimLeft(raw, " \t")
@@ -87,48 +104,60 @@ func (t *Table) Refresh() {
 			continue
 		}
 		cmd := bytes.TrimLeft(rest[idx2+1:], " ")
-		if !looksLikeCursorAgent(cmd) {
-			continue
-		}
 		pid, err := strconv.Atoi(pidStr)
 		if err != nil {
 			continue
 		}
+		if looksLikeCodewhale(cmd) {
+			liveCodewhale[pid] = state
+			procs = append(procs, agentProc{pid: pid, state: state, codewhale: true})
+			continue
+		}
+		if !looksLikeCursorAgent(cmd) {
+			continue
+		}
 		isWtm := bytes.Contains(cmd, []byte("agent-monitor wt-manager"))
-		cands = append(cands, cand{pid: pid, state: state, wtManager: isWtm})
+		procs = append(procs, agentProc{pid: pid, state: state, wtManager: isWtm})
 	}
 
-	if len(cands) == 0 {
+	if len(procs) == 0 {
+		// ps worked and found no agent processes at all. The registry
+		// is still consulted because it is a cheap stat-only read, but
+		// the lsof sweep is skipped: it can only rediscover the same
+		// argv shapes ps already rejected, and this branch is the
+		// steady state on an idle machine.
+		t.bindCodewhaleRegistry(liveCodewhale)
 		return
 	}
 
-	// Step 2: bulk lsof. `lsof -p p1,p2,…` lists open files for all
-	// listed pids in one invocation.
-	pidArgs := make([]string, 0, len(cands))
-	pidIndex := make(map[int]cand, len(cands))
-	for _, c := range cands {
-		pidArgs = append(pidArgs, strconv.Itoa(c.pid))
-		pidIndex[c.pid] = c
+	// Step 2: bulk lsof. One invocation for every live agent process of
+	// either family; the open file is what identifies the session.
+	pidArgs := make([]string, 0, len(procs))
+	pidIndex := make(map[int]agentProc, len(procs))
+	for _, p := range procs {
+		pidArgs = append(pidArgs, strconv.Itoa(p.pid))
+		pidIndex[p.pid] = p
 	}
 	lsofOut, err := exec.Command("lsof", "-p", strings.Join(pidArgs, ",")).Output()
 	if err != nil {
 		// lsof exits non-zero if any of the pids exited between the
 		// `ps` call and now; the partial stdout is still usable.
-		// `Output` only sets err for status, not for partial reads.
-		// `exec.Command` swallows partial stdout on err==exit with code,
-		// so we have to use CombinedOutput-style behavior:
-		ee, _ := err.(*exec.ExitError)
-		if ee == nil {
+		if _, ok := err.(*exec.ExitError); !ok {
 			return
 		}
-		// fall through with whatever we got (zero bytes if hard fail).
 	}
 
-	// Format we care about (lsof default):
-	//   COMMAND  PID USER  FD TYPE  DEVICE  SIZE/OFF  NODE  NAME
-	// Each line begins with the COMMAND, but we re-parse defensively by
-	// looking for "<digit>... ... /path".
-	currentPID := 0
+	t.bindFromLsof(lsofOut, pidIndex)
+
+	// Registry fallback: covers a runtime that writes its log with
+	// open/append/close and therefore holds no fd. Runs after lsof so
+	// the open-file signal always wins.
+	t.bindCodewhaleRegistry(liveCodewhale)
+}
+
+// bindFromLsof maps open files back to sessions for both agent families.
+// Pure over its inputs so the parser is testable without live processes.
+func (t *Table) bindFromLsof(lsofOut []byte, pidIndex map[int]agentProc) {
 	for _, raw := range bytes.Split(lsofOut, []byte{'\n'}) {
 		if len(raw) == 0 || raw[0] == 'C' /* header */ {
 			continue
@@ -141,19 +170,29 @@ func (t *Table) Refresh() {
 		if err != nil {
 			continue
 		}
-		currentPID = pid
+		proc, ok := pidIndex[pid]
+		if !ok {
+			continue
+		}
 		name := string(fields[len(fields)-1])
-		// We're looking for: .../.cursor/chats/<projectHash>/<chatId>/store.db
+
+		if proc.codewhale {
+			if id := codewhaleIDFromOpenPath(name, t.codewhaleDir); id != "" {
+				t.byChat[id] = Process{PID: pid, State: proc.state}
+			}
+			continue
+		}
+
+		// Cursor: .../.cursor/chats/<projectHash>/<chatId>/store.db
+		if !strings.HasSuffix(name, "/store.db") {
+			continue
+		}
 		i := strings.Index(name, "/.cursor/chats/")
 		if i < 0 {
 			continue
 		}
-		if !strings.HasSuffix(name, "/store.db") {
-			continue
-		}
 		// Walk parts after `chats/`: <projectHash>/<chatId>/store.db
 		after := name[i+len("/.cursor/chats/"):]
-		// after = "<projectHash>/<chatId>/store.db"
 		first := strings.IndexByte(after, '/')
 		if first < 0 {
 			continue
@@ -167,14 +206,10 @@ func (t *Table) Refresh() {
 		if chatID == "" {
 			continue
 		}
-		c, ok := pidIndex[currentPID]
-		if !ok {
-			continue
-		}
 		t.byChat[chatID] = Process{
-			PID:       currentPID,
-			State:     c.state,
-			WtManager: c.wtManager,
+			PID:       pid,
+			State:     proc.state,
+			WtManager: proc.wtManager,
 		}
 	}
 }

@@ -53,9 +53,9 @@ Re-run `install.sh` any time — it's idempotent.
 | `y` | copy chat id to clipboard |
 | `o` | open worktree in Cursor |
 | `i` | open nvim + Diffview iTerm tab |
-| `n` | new worktree (modal: branch / base / prompt) |
+| `n` | new worktree (modal: repo / branch / base / agent / approval / prompt) |
 | `r` | kill agent (and remove worktree if attached) |
-| `s` | `wt sync` — rebase onto base |
+| `s` | sync — rebase the worktree onto its base |
 | `x` | pause / resume the selected agent (`SIGSTOP` / `SIGCONT`) |
 | `p` | pause / resume auto-refresh |
 | `e` | show / hide worktrees with no chat (hidden by default) |
@@ -64,16 +64,54 @@ Re-run `install.sh` any time — it's idempotent.
 | `?` | help modal |
 | `F2` / `F3`, `M-Tab` | switch panes (session-scoped, never leaks to other tmux sessions) |
 
+`n` opens a new worktree and launches the chosen CLI in the tab. When `codewhale`
+is on `PATH` the agent field defaults to it, so the common case needs no extra
+keystroke; `←` / `→` switch to `cursor-agent`.
+
+The `asks:` field is the approval posture, and **it is yours to choose** — the
+dashboard never switches it for you. It defaults to `on-request`, so a new agent
+stops and asks before it acts. `←` / `→` cycles:
+
+- `on-request` — ask before acting (default)
+- `auto (safe calls run)` — run safe tool calls without stopping; anything risky still stops for you
+- `never (unattended)` — run without stopping at all, for a worktree you open and walk away from. The modal warns when you select it.
+- `untrusted (strict)` — refuse unless already trusted
+
+The posture maps per CLI, so each agent uses the closest thing it actually has:
+
+| Posture | codewhale | cursor-agent |
+|---|---|---|
+| `on-request` | `--approval-policy on-request` | default |
+| `auto` | `--approval-policy on-failure` | `--auto-review` (Smart Auto) |
+| `never` | `--approval-policy never` | `--yolo` |
+| `untrusted` | `--approval-policy untrusted` | default (no stricter flag exists) |
+
+The sandbox stays `workspace-write` in every posture: the agent edits freely
+inside its worktree and still can't reach the rest of the machine. When `wt` is
+installed, `auto` deliberately bypasses `wt create --iterm` — wt can only express
+`--yolo`, so routing auto through it would silently launch a different posture.
+
 ## What it watches
 
-Cursor stores transcripts as JSONL under `~/.cursor/projects/<encoded>/agent-transcripts/<chatId>/<chatId>.jsonl`. Each tick the dashboard:
+**Cursor.** Transcripts are JSONL under `~/.cursor/projects/<encoded>/agent-transcripts/<chatId>/<chatId>.jsonl`.
 
-1. Walks the projects dir (one syscall pass).
-2. Tails the last ~8 KB of each transcript whose mtime advanced (mtime cache + bounded read).
-3. Runs one `ps` and one bulk `lsof` to map chat ids to live `cursor-agent` processes.
+**Codewhale.** Session logs are JSONL under `~/.codewhale/sessions/<uuid>.json` (override the
+directory with `AM_CODEWHALE_DIR`). Each tick the dashboard:
+
+1. Walks both stores (one syscall pass each).
+2. Reads a bounded head + tail of each log whose mtime advanced (mtime cache; Cursor: 8 KB tail, Codewhale: 512 KB head for the workspace and 64 KB tail for the last turn).
+3. Runs one `ps` and one bulk `lsof` to map sessions to live processes: Cursor through its open `store.db`, Codewhale through its open session log.
 4. Classifies each card by **content** (last JSONL entry shape), not just by clock.
 
-This is a fully read-only view of the agent runtime — the dashboard never opens a transcript in full, never touches `cursor-agent`'s sockets, and never blocks on I/O. `cursor-agent` workers detach from their parent terminal, so closing the terminal that started one doesn't kill it; `am` just gives you visibility back from any new terminal.
+The workspace for a Codewhale card is read from the log's own metadata when it states one, and otherwise inferred from any absolute path in the log that exists on disk — preferring a git checkout. A card whose workspace can't be established shows `(unknown workspace)` rather than a guess.
+
+This is a fully read-only view of the agent runtime — the dashboard never opens a log in full, never touches an agent's sockets, and never blocks on I/O. Agents detach from their parent terminal, so closing the terminal that started one doesn't kill it; `am` just gives you visibility back from any new terminal.
+
+A card's `cmd:` row names the CLI that resumes it (`cursor-agent --resume <id>` or `codewhale resume <id>`), and `am list` reports that `SOURCE` per row. `f` (follow) is Cursor-only; on a Codewhale card it points you at `a` instead of tailing the wrong file.
+
+**Removal never deletes context.** `r` signals the agent and, for a worktree card, deletes the worktree directory and its branch — including any uncommitted work in it. The conversation itself is untouched for both agent types: Cursor's transcript stays under `~/.cursor/projects/...` and Codewhale's log under `~/.codewhale/sessions/`, so `<cli> resume <id>` still replays the full history. The one thing removal destroys is the workspace, so resuming into a deleted worktree fails even though the transcript is intact.
+
+Once a worktree is gone its card stays gone — not just until the next restart. A card whose worktree no longer exists has nothing to act on, and tombstone hiding lives only in memory. The exception is an agent still running in a deleted worktree: it keeps its card so you can kill it.
 
 ## Subcommands
 
@@ -81,7 +119,7 @@ This is a fully read-only view of the agent runtime — the dashboard never open
 am                start or attach the dashboard
 am attach         attach an existing session (error if none)
 am detach         detach current tmux client
-am list           plain-text dump (machine-readable)
+am list           plain-text dump (machine-readable, one SOURCE column per agent)
 am follow <id>    open dashboard with bottom pane live-tailing one transcript
 am resume <id>    open dashboard with bottom pane running cursor-agent --resume <id>
 am kill           kill the agent-monitor tmux session (monitored agents unaffected)

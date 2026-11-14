@@ -56,12 +56,14 @@ type confirmBar struct {
 
 // newWtForm holds the in-progress fields of the `n` modal.
 type newWtForm struct {
-	repo    textinput.Model
-	branch  textinput.Model
-	base    textinput.Model
-	prompt  textinput.Model
-	focused int // 0=repo, 1=branch, 2=base, 3=prompt
-	err     string
+	repo     textinput.Model
+	branch   textinput.Model
+	base     textinput.Model
+	prompt   textinput.Model
+	agent    wtbridge.Agent
+	approval wtbridge.Approval
+	focused  int // 0=repo, 1=branch, 2=base, 3=agent, 4=approval, 5=prompt
+	err      string
 }
 
 // model is the bubbletea Model for the whole dashboard.
@@ -138,9 +140,9 @@ func New(opts Options, version string) *model {
 	branch.Width = 50
 	base := textinput.New()
 	base.Prompt = ""
+	base.Placeholder = "detected from the repo"
 	base.CharLimit = 80
 	base.Width = 50
-	base.SetValue("origin/main")
 	prompt := textinput.New()
 	prompt.Prompt = ""
 	prompt.CharLimit = 200
@@ -156,10 +158,24 @@ func New(opts Options, version string) *model {
 			branch: branch,
 			base:   base,
 			prompt: prompt,
+			agent:  defaultAgent(),
+			// On-request: the new agent asks before it acts. Running
+			// unattended is available, but only if the user picks it.
+			approval: wtbridge.ApprovalOnRequest,
 		},
 		tombstones: map[string]struct{}{},
 		version:    version,
 	}
+}
+
+// defaultAgent prefers codewhale when it is installed, so the `n` modal
+// launches the lowest-friction agent without an extra keystroke. Cursor
+// stays the fallback on machines that only have cursor-agent.
+func defaultAgent() wtbridge.Agent {
+	if wtbridge.AgentCodewhale.Available() {
+		return wtbridge.AgentCodewhale
+	}
+	return wtbridge.AgentCursor
 }
 
 // Init is bubbletea's startup hook; we kick off the first tick and
@@ -209,6 +225,13 @@ func (m *model) refreshCmd() tea.Cmd {
 			}
 			if m.proc.IsWtManager(s.ID) {
 				wtmID = s.ID
+				continue
+			}
+			// A worktree that no longer exists has nothing to act on. Drop
+			// it so `r` stays effective across restarts — tombstones live
+			// only in memory. A still-running agent is kept, because a
+			// deleted workspace is exactly when you want a way to kill it.
+			if OrphanedWorktree(s, m.proc.IsLive(s.ID)) {
 				continue
 			}
 			if s.WorktreeSlug != "" {
@@ -297,29 +320,98 @@ func (m *model) selectedSession() *session.Session {
 	return &m.sessions[m.selected]
 }
 
-// resolveRepoPath returns the on-disk workspace root for the given
-// session (worktree path for worktree-rooted sessions, primary repo
-// otherwise). Returns "" if it can't be resolved.
-func (m *model) resolveRepoPath(s *session.Session) string {
-	primary := scanner.DecodeProjectPath(s.ProjectDir)
-	if primary == "" {
-		return ""
-	}
-	if s.WorktreeSlug == "" {
-		return primary
-	}
-	// Translate the encoded slug into an actual on-disk slug.
-	real := scanner.SlugFromEncoded(primary, s.WorktreeSlug)
-	if real != "" {
-		p := filepath.Join(primary, ".worktrees", real)
-		if _, err := os.Stat(p); err == nil {
-			return p
+// agentRuntimeDirs are path segments belonging to the agent CLIs
+// themselves. A transcript's `cd` can land in one of these (a real card
+// recorded ~/.local/share/cursor-agent/versions/<v> as its cwd), and no
+// agent session's workspace is ever inside its own install tree.
+var agentRuntimeDirs = []string{
+	"/.local/share/cursor-agent/",
+	"/.cursor/",
+	"/.codewhale/",
+	"/.claude/",
+}
+
+func looksLikeAgentRuntimePath(p string) bool {
+	withSlash := p + "/"
+	for _, dir := range agentRuntimeDirs {
+		if strings.Contains(withSlash, dir) {
+			return true
 		}
 	}
-	if p, err := m.wt.PathFor(primary, s.WorktreeSlug); err == nil && p != "" {
-		return p
+	return false
+}
+
+// sessionWorkspace returns the directory the agent actually ran in, or
+// "" when it can't be established.
+//
+// Precedence is deliberate, and the order matters:
+//
+//  1. For a worktree session the encoded project dir is authoritative —
+//     Cursor encoded the workspace it opened, and resolving the real slug
+//     against `.worktrees/` recovers the exact path.
+//  2. CWDHint is only a shell-command observation. A transcript's `cd`
+//     can point at anything the agent touched, including its own install
+//     directory; a real card had CWDHint = ~/.local/share/cursor-agent/
+//     versions/<v>, and trusting it made removal hunt for
+//     `.worktrees/<slug>` inside the Cursor binary directory.
+//  3. Decoded project dir last, for primary sessions whose ProjectDir is
+//     a parent folder rather than a repo.
+func sessionWorkspace(s *session.Session) string {
+	if s == nil {
+		return ""
+	}
+	primary := scanner.DecodeProjectPath(s.ProjectDir)
+	if s.WorktreeSlug != "" && primary != "" {
+		if real := scanner.SlugFromEncoded(primary, s.WorktreeSlug); real != "" {
+			wt := filepath.Join(primary, ".worktrees", real)
+			if st, err := os.Stat(wt); err == nil && st.IsDir() {
+				return wt
+			}
+		}
+		return primary
+	}
+	if s.CWDHint != "" && !looksLikeAgentRuntimePath(s.CWDHint) {
+		if st, err := os.Stat(s.CWDHint); err == nil && st.IsDir() {
+			return s.CWDHint
+		}
 	}
 	return primary
+}
+
+// sessionPrimary returns the primary git checkout that owns the session,
+// or "" when the session is not inside a repository.
+//
+// Returning a non-repo directory here is a trap: callers use it as a
+// base for `.worktrees/<slug>` operations, so a wrong answer sends those
+// lookups somewhere unrelated instead of failing cleanly.
+func sessionPrimary(s *session.Session) string {
+	ws := sessionWorkspace(s)
+	if ws == "" {
+		return ""
+	}
+	return wtbridge.GitPrimary(ws)
+}
+
+// resolveRepoPath returns the directory to act on for this session: the
+// worktree for a worktree-rooted session, the checkout for a primary one.
+func (m *model) resolveRepoPath(s *session.Session) string {
+	if s == nil {
+		return ""
+	}
+	if s.WorktreeSlug != "" {
+		if primary := sessionPrimary(s); primary != "" {
+			if real := scanner.SlugFromEncoded(primary, s.WorktreeSlug); real != "" {
+				p := filepath.Join(primary, ".worktrees", real)
+				if st, err := os.Stat(p); err == nil && st.IsDir() {
+					return p
+				}
+			}
+			if p, err := m.wt.PathFor(primary, s.WorktreeSlug); err == nil && p != "" {
+				return p
+			}
+		}
+	}
+	return sessionWorkspace(s)
 }
 
 // runWtCmd is a small helper that turns a wtbridge call into a
@@ -342,6 +434,23 @@ func (m *model) runRemoveCmd(label, key string, do func() error) tea.Cmd {
 		}
 		return wtResultMsg{title: label, subtitle: ""}
 	}
+}
+
+// OrphanedWorktree reports whether a card should be dropped because its
+// worktree no longer exists.
+//
+// Removal deletes the worktree but never the transcript, and card
+// tombstones are in-memory, so without this a removed card returns on the
+// next restart — presenting itself as a primary session on the parent
+// repo, which it never was.
+//
+// A live agent keeps its card even in a deleted worktree: that is exactly
+// when you need the dashboard to reach in and kill it.
+func OrphanedWorktree(s session.Session, live bool) bool {
+	if live || s.WorktreeSlug == "" {
+		return false
+	}
+	return scanner.IsOrphanedWorktree(s.ProjectDir)
 }
 
 // tombstoneKey identifies a card for `r` removal. Worktree cards are

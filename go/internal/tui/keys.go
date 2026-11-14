@@ -139,6 +139,14 @@ func (m *model) handleResume() (tea.Model, tea.Cmd) {
 		return m, m.flashConfirm("can't resolve workspace path", "")
 	}
 	id := s.ID
+	if s.Source == session.SourceCodewhale {
+		// `wt resume` hardcodes cursor-agent; a Codewhale card resumes
+		// through its own CLI, in the same workspace.
+		return m, m.runWtCmd(
+			fmt.Sprintf("resumed %s in new iTerm tab", short(id)),
+			func() error { return wtbridge.OpenITerm(cwd, "codewhale resume "+id) },
+		)
+	}
 	return m, m.runWtCmd(
 		fmt.Sprintf("resumed %s in new iTerm tab", short(id)),
 		func() error { return m.wt.Resume(id, cwd) },
@@ -152,6 +160,12 @@ func (m *model) handleFollow() (tea.Model, tea.Cmd) {
 	s := m.selectedSession()
 	if s == nil {
 		return m, nil
+	}
+	if s.Source == session.SourceCodewhale {
+		return m, m.flashConfirm(
+			"follow tails Cursor transcripts only",
+			"press 'a' to resume this Codewhale session in a new tab",
+		)
 	}
 	id := s.ID
 	return m, m.runWtCmd(
@@ -178,7 +192,7 @@ func (m *model) handlePauseToggle() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if !m.proc.IsLive(s.ID) {
-		return m, m.flashConfirm("no live cursor-agent process for this chat", "(already exited?)")
+		return m, m.flashConfirm("no live agent process for this session", "(already exited?)")
 	}
 	id := s.ID
 	wasPaused := m.proc.IsPaused(id)
@@ -204,7 +218,10 @@ func (m *model) handleIDE() (tea.Model, tea.Cmd) {
 	if s.WorktreeSlug == "" {
 		return m, m.flashConfirm("no worktree attached to this session", "(IDE tab is worktree-only)")
 	}
-	primary := scanner.DecodeProjectPath(s.ProjectDir)
+	primary := sessionPrimary(s)
+	if primary == "" {
+		return m, m.flashConfirm("can't resolve the repo for this session", s.Project)
+	}
 	slug := s.WorktreeSlug
 	if real := scanner.SlugFromEncoded(primary, slug); real != "" {
 		slug = real
@@ -222,40 +239,47 @@ func (m *model) handleOpen() (tea.Model, tea.Cmd) {
 	if s == nil {
 		return m, nil
 	}
-	primary := scanner.DecodeProjectPath(s.ProjectDir)
-	slug := s.WorktreeSlug
-	if slug != "" {
-		if real := scanner.SlugFromEncoded(primary, slug); real != "" {
-			slug = real
+	if s.WorktreeSlug == "" {
+		// A primary card opens whatever directory the agent ran in, even
+		// when that directory is not itself a repo — a Cursor window on
+		// ~/Documents is the common case.
+		dir := sessionWorkspace(s)
+		if dir == "" {
+			return m, m.flashConfirm("can't resolve the workspace for this session", s.Project)
 		}
+		return m, m.runWtCmd(
+			fmt.Sprintf("opening %s in Cursor", dir),
+			func() error { return exec.Command("cursor", dir).Start() },
+		)
 	}
-	repo := primary
+	primary := sessionPrimary(s)
+	if primary == "" {
+		return m, m.flashConfirm("can't resolve the repo for this session", s.Project)
+	}
+	slug := s.WorktreeSlug
+	if real := scanner.SlugFromEncoded(primary, slug); real != "" {
+		slug = real
+	}
 	return m, m.runWtCmd(
-		fmt.Sprintf("opening %s in Cursor", repo),
-		func() error {
-			if slug != "" {
-				return m.wt.Open(repo, slug)
-			}
-			// No slug → fall back to the cursor CLI on the primary.
-			return exec.Command("cursor", repo).Start()
-		},
+		fmt.Sprintf("opening %s in Cursor", primary),
+		func() error { return m.wt.Open(primary, slug) },
 	)
 }
 
-// handleSync runs `wt sync` for the worktree.
+// handleSync rebases the session's worktree (or primary checkout) onto
+// its base.
 func (m *model) handleSync() (tea.Model, tea.Cmd) {
 	s := m.selectedSession()
 	if s == nil {
 		return m, nil
 	}
-	primary := scanner.DecodeProjectPath(s.ProjectDir)
-	repo := primary
-	if s.WorktreeSlug != "" {
-		if p, err := m.wt.PathFor(primary, s.WorktreeSlug); err == nil && p != "" {
-			repo = p
-		}
+	// Sync operates on the checkout the session lives in: the worktree
+	// for a worktree card, the primary otherwise.
+	repo := m.resolveRepoPath(s)
+	if repo == "" {
+		return m, m.flashConfirm("can't resolve the workspace for this session", s.Project)
 	}
-	return m, m.runWtCmd("wt sync done", func() error { return m.wt.Sync(repo) })
+	return m, m.runWtCmd("synced onto base", func() error { return m.wt.Sync(repo) })
 }
 
 // handleEnter focuses the selected card in the wt-manager bottom pane
@@ -279,9 +303,10 @@ func (m *model) handleEnter() (tea.Model, tea.Cmd) {
 // startRemove pops the y/N confirm bar for the `r` hotkey.
 //
 // Removal policy:
-//   - Worktree card: kill the agent AND `wt remove <slug> --force` (drops
-//     the worktree dir + branch). y/N confirm because the branch deletion
-//     is destructive — work in progress on that branch will be gone.
+//   - Worktree card: kill the agent AND remove the worktree + branch
+//     (`wt remove --force` when wt is installed, plain git otherwise).
+//     y/N confirm because the branch deletion is destructive — work in
+//     progress on that branch will be gone.
 //   - Primary card: kill the agent (SIGTERM, swallowed if already idle)
 //     and tombstone the card so it disappears on the next refresh. No
 //     filesystem changes — primary checkout stays.
@@ -293,7 +318,7 @@ func (m *model) startRemove() (tea.Model, tea.Cmd) {
 	m.state = stateConfirmRemove
 	if s.WorktreeSlug != "" {
 		slug := s.WorktreeSlug
-		if primary := scanner.DecodeProjectPath(s.ProjectDir); primary != "" {
+		if primary := sessionPrimary(s); primary != "" {
 			if real := scanner.SlugFromEncoded(primary, slug); real != "" {
 				slug = real
 			}
@@ -314,8 +339,8 @@ func (m *model) startRemove() (tea.Model, tea.Cmd) {
 // handleConfirmRemoveKey routes keys while the y/N confirm is up.
 //
 // Reachable for both card types (worktree and primary). Worktree cards
-// trigger an additional `wt remove --force` after the kill so the
-// worktree directory and branch are deleted alongside the agent.
+// trigger an additional worktree removal after the kill so the
+// directory and branch are deleted alongside the agent.
 func (m *model) handleConfirmRemoveKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	m.state = stateList
@@ -330,7 +355,7 @@ func (m *model) handleConfirmRemoveKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	id := s.ID
 	hasWorktree := s.WorktreeSlug != ""
-	primary := scanner.DecodeProjectPath(s.ProjectDir)
+	primary := sessionPrimary(s)
 	slug := s.WorktreeSlug
 	if hasWorktree && primary != "" {
 		if real := scanner.SlugFromEncoded(primary, slug); real != "" {
@@ -339,7 +364,7 @@ func (m *model) handleConfirmRemoveKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Tombstone the card so it disappears on the next refresh tick
-	// instead of lingering until `wt remove` finishes. Worktree cards
+	// instead of lingering until the removal finishes. Worktree cards
 	// are keyed by project dir, not chat id: every stub card shares the
 	// "(no session)" id, so an id tombstone would hide all of them.
 	tomb := tombstoneKey(*s)
@@ -383,6 +408,15 @@ func (m *model) openNewWt() (tea.Model, tea.Cmd) {
 	m.form.repo.SetValue(repo)
 	m.form.branch.SetValue("")
 	m.form.prompt.SetValue("")
+	// Prefill a base the repo actually has. The field used to be a fixed
+	// "origin/main", which is wrong for repos defaulting to master, for
+	// remotes not named origin, and for repos with no remote at all —
+	// creating a worktree there failed with "invalid reference".
+	if base := wtbridge.DefaultBase(repo); base != "" {
+		m.form.base.SetValue(base)
+	} else {
+		m.form.base.SetValue("")
+	}
 	m.form.repo.Blur()
 	m.form.branch.Blur()
 	m.form.base.Blur()
@@ -443,6 +477,8 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		branch := strings.TrimSpace(m.form.branch.Value())
 		base := strings.TrimSpace(m.form.base.Value())
 		prompt := m.form.prompt.Value()
+		agent := m.form.agent
+		approval := m.form.approval
 		if repo == "" {
 			m.form.err = "repo path is required — this workspace is not a git repo"
 			m.focusNewWt(0)
@@ -453,6 +489,11 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.focusNewWt(1)
 			return m, nil
 		}
+		if !agent.Available() {
+			m.form.err = agent.Bin() + " is not on PATH — install it or pick another agent"
+			m.focusNewWt(3)
+			return m, nil
+		}
 		top := wtbridge.GitPrimary(repo)
 		if top == "" {
 			m.form.err = "not a git repo: " + repo
@@ -460,14 +501,51 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if base == "" {
-			base = "origin/main"
+			// Empty field: let Create resolve the repo's real default
+			// rather than inventing origin/main.
+			base = wtbridge.DefaultBase(top)
+			if base == "" {
+				m.form.err = "could not determine a base branch — type one (e.g. main)"
+				m.focusNewWt(2)
+				return m, nil
+			}
 		}
 		m.form.err = ""
 		m.state = stateList
+		// Codewhale sessions have no Cursor transcript, so the worktree
+		// can only surface as a stub card. Un-hide stubs so the agent the
+		// user just launched is actually visible in the list.
+		if agent != wtbridge.AgentCursor {
+			m.showEmpty = true
+		}
 		return m, m.runWtCmd(
-			fmt.Sprintf("created worktree %s", branch),
-			func() error { return m.wt.Create(top, branch, base, prompt) },
+			fmt.Sprintf("created worktree %s with %s", branch, agent),
+			func() error { return m.wt.Create(top, branch, base, prompt, agent, approval) },
 		)
+	}
+	// The agent and approval fields are selectors, not text inputs:
+	// ←/→ (or h/l, space) cycle them instead of typing into them.
+	if m.form.focused == 3 {
+		switch key {
+		case "left", "h":
+			m.form.agent = m.form.agent.Next(-1)
+			m.form.err = ""
+		case "right", "l", " ":
+			m.form.agent = m.form.agent.Next(1)
+			m.form.err = ""
+		}
+		return m, nil
+	}
+	if m.form.focused == 4 {
+		switch key {
+		case "left", "h":
+			m.form.approval = m.form.approval.Next(-1)
+			m.form.err = ""
+		case "right", "l", " ":
+			m.form.approval = m.form.approval.Next(1)
+			m.form.err = ""
+		}
+		return m, nil
 	}
 	// Pass to the focused field.
 	m.form.err = ""
@@ -479,7 +557,7 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.form.branch, cmd = m.form.branch.Update(msg)
 	case 2:
 		m.form.base, cmd = m.form.base.Update(msg)
-	case 3:
+	case 5:
 		m.form.prompt, cmd = m.form.prompt.Update(msg)
 	}
 	return m, cmd
@@ -498,13 +576,17 @@ func (m *model) focusNewWt(idx int) {
 		m.form.branch.Focus()
 	case 2:
 		m.form.base.Focus()
-	case 3:
+	case 5:
 		m.form.prompt.Focus()
 	}
 }
 
+// newWtFields is the number of focusable fields in the modal:
+// repo, branch, base, agent, approval, prompt.
+const newWtFields = 6
+
 func (m *model) cycleNewWtFocus(delta int) {
-	m.focusNewWt((m.form.focused + delta + 4) % 4)
+	m.focusNewWt((m.form.focused + delta + newWtFields) % newWtFields)
 }
 
 // short returns the first 8 chars of a UUID for compact status messages.

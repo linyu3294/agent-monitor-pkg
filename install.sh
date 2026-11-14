@@ -63,7 +63,8 @@ for cmd in tmux ps lsof; do
 done
 [[ -d /Applications/iTerm.app ]] || warn "iTerm2 not found at /Applications/iTerm.app — 'a' / 'n' / 'i' hotkeys won't open tabs"
 command -v cursor-agent >/dev/null 2>&1 || warn "cursor-agent not on PATH — 'a' resume tabs will fail to launch"
-[[ -x "$HOME/.claude/skills/worktrees/scripts/wt" ]] || warn "worktrees skill not installed — 'n'/'r'/'s'/'i'/'o' hotkeys won't work"
+command -v codewhale >/dev/null 2>&1 || warn "codewhale not on PATH — 'n' falls back to the cursor-agent launcher"
+[[ -x "$HOME/.claude/skills/worktrees/scripts/wt" ]] || warn "worktrees skill (wt) not installed — using plain git instead; 'n'/'r'/'s'/'i'/'o' still work"
 
 # Arch detection.
 arch="$(uname -m)"
