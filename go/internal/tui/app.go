@@ -140,9 +140,9 @@ func New(opts Options, version string) *model {
 	branch.Width = 50
 	base := textinput.New()
 	base.Prompt = ""
+	base.Placeholder = "detected from the repo"
 	base.CharLimit = 80
 	base.Width = 50
-	base.SetValue("origin/main")
 	prompt := textinput.New()
 	prompt.Prompt = ""
 	prompt.CharLimit = 200
@@ -313,27 +313,80 @@ func (m *model) selectedSession() *session.Session {
 	return &m.sessions[m.selected]
 }
 
+// sessionWorkspace returns the directory the agent actually ran in, or
+// "" when it can't be established.
+//
+// CWDHint is the exact path a Codewhale log states, or the shell cwd a
+// Cursor transcript records, so it beats decoding the encoded project
+// dir — that encoding collapses `_`, `/` and `-` into the same character
+// and cannot always be inverted. Every action that touches the
+// filesystem should start here.
+func sessionWorkspace(s *session.Session) string {
+	if s == nil {
+		return ""
+	}
+	if s.CWDHint != "" {
+		if st, err := os.Stat(s.CWDHint); err == nil && st.IsDir() {
+			return s.CWDHint
+		}
+	}
+	return scanner.DecodeProjectPath(s.ProjectDir)
+}
+
+// sessionPrimary returns the primary checkout for a session: the repo
+// that owns its worktree, or the checkout itself when it has none.
+func sessionPrimary(s *session.Session) string {
+	ws := sessionWorkspace(s)
+	if ws == "" {
+		return ""
+	}
+	if primary := wtbridge.GitPrimary(ws); primary != "" {
+		return primary
+	}
+	return ws
+}
+
 // resolveRepoPath returns the on-disk workspace root for the given
 // session (worktree path for worktree-rooted sessions, primary repo
 // otherwise). Returns "" if it can't be resolved.
 func (m *model) resolveRepoPath(s *session.Session) string {
-	primary := scanner.DecodeProjectPath(s.ProjectDir)
+	ws := sessionWorkspace(s)
+	primary := ""
+	if ws != "" {
+		if p := wtbridge.GitPrimary(ws); p != "" {
+			primary = p
+		}
+	}
 	if primary == "" {
+		primary = scanner.DecodeProjectPath(s.ProjectDir)
+	}
+	if primary == "" && ws == "" {
 		return ""
 	}
 	if s.WorktreeSlug == "" {
-		return primary
+		if primary != "" {
+			return primary
+		}
+		return ws
+	}
+	// The session's own workspace is the worktree it ran in.
+	if ws != "" && filepath.Base(filepath.Dir(ws)) == ".worktrees" {
+		return ws
 	}
 	// Translate the encoded slug into an actual on-disk slug.
-	real := scanner.SlugFromEncoded(primary, s.WorktreeSlug)
-	if real != "" {
-		p := filepath.Join(primary, ".worktrees", real)
-		if _, err := os.Stat(p); err == nil {
+	if primary != "" {
+		if real := scanner.SlugFromEncoded(primary, s.WorktreeSlug); real != "" {
+			p := filepath.Join(primary, ".worktrees", real)
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		}
+		if p, err := m.wt.PathFor(primary, s.WorktreeSlug); err == nil && p != "" {
 			return p
 		}
 	}
-	if p, err := m.wt.PathFor(primary, s.WorktreeSlug); err == nil && p != "" {
-		return p
+	if ws != "" {
+		return ws
 	}
 	return primary
 }

@@ -55,7 +55,7 @@ Re-run `install.sh` any time — it's idempotent.
 | `i` | open nvim + Diffview iTerm tab |
 | `n` | new worktree (modal: repo / branch / base / agent / approval / prompt) |
 | `r` | kill agent (and remove worktree if attached) |
-| `s` | `wt sync` — rebase onto base |
+| `s` | sync — rebase the worktree onto its base |
 | `x` | pause / resume the selected agent (`SIGSTOP` / `SIGCONT`) |
 | `p` | pause / resume auto-refresh |
 | `e` | show / hide worktrees with no chat (hidden by default) |

@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/agent-monitor/agent-monitor/internal/scanner"
 	"github.com/agent-monitor/agent-monitor/internal/session"
 	"github.com/agent-monitor/agent-monitor/internal/wtbridge"
 )
@@ -301,4 +302,70 @@ func TestNewWorktreeApprovalDefaultsToAsk(t *testing.T) {
 	if !strings.Contains(cmd, "--approval-policy never") {
 		t.Fatalf("launch command = %q, want --approval-policy never", cmd)
 	}
+}
+
+// creating a worktree used to fail with "fatal: invalid reference:
+// origin/main" on any repo without that ref — no remote, or a master
+// default. The modal must detect a base that exists and create.
+func TestNewWorktreeCreatesOnRepoWithoutOriginMain(t *testing.T) {
+	repo := wtbridge.GitPrimary(initGitRepo(t))
+	if repo == "" {
+		t.Fatal("temp repo has no git primary")
+	}
+	if refExistsForTest(t, repo, "origin/main") {
+		t.Fatal("test repo unexpectedly has origin/main")
+	}
+
+	stubDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stubDir, "codewhale"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stubDir, "osascript"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("AM_WT_BIN", filepath.Join(t.TempDir(), "missing-wt"))
+
+	m := New(Options{RefreshInterval: time.Second, IdleThreshold: time.Hour, MaxCards: 10}, "test")
+	m.sessions = []session.Session{{
+		ID:         "abcdef1234567890",
+		Source:     session.SourceCodewhale,
+		ProjectDir: repoToEncoded(repo),
+		CWDHint:    repo,
+	}}
+
+	var mdl tea.Model = m
+	mdl, _ = mdl.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	mdl, _ = mdl.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	mm := mdl.(*model)
+
+	// The detected base must be a ref that exists, not a hardcoded guess.
+	if got := mm.form.base.Value(); got != "main" {
+		t.Fatalf("base prefill = %q, want main", got)
+	}
+
+	mm.form.branch.SetValue("feature-noremote")
+	mdl, cmd := mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("expected create command, form err=%q", mm.form.err)
+	}
+	msg := cmd()
+	if res, ok := msg.(wtResultMsg); ok && res.failed {
+		t.Fatalf("create failed: %s / %s", res.title, res.subtitle)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".worktrees", "feature-noremote")); err != nil {
+		t.Fatalf("worktree not created: %v", err)
+	}
+}
+
+// refExistsForTest reports whether a ref resolves in repo.
+func refExistsForTest(t *testing.T, repo, ref string) bool {
+	t.Helper()
+	cmd := exec.Command("git", "-C", repo, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	return cmd.Run() == nil
+}
+
+// repoToEncoded builds the encoded project dir the scanner would use.
+func repoToEncoded(repo string) string {
+	return scanner.EncodeForCursor(strings.TrimPrefix(repo, "/"))
 }

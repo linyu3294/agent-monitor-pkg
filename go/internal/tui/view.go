@@ -418,7 +418,7 @@ Worktree lifecycle
   n    new worktree (repo / branch / base / agent / approval / prompt)
        approval: on-request (default) · auto · never · untrusted
   r    remove selected (y/N confirm)
-  s    wt sync (rebase onto base)
+  s    sync (rebase onto base)
 
 Agent control
   x    pause / resume (SIGSTOP / SIGCONT)
@@ -458,7 +458,7 @@ func (m *model) viewNewWt() string {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(styleDim.Render("repo is the git checkout · base defaults to origin/main · agent is the CLI launched in the new tab"))
+	b.WriteString(styleDim.Render("repo is the git checkout · base is detected from the repo · agent is the CLI launched in the new tab"))
 	if m.form.approval == wtbridge.ApprovalNever {
 		b.WriteString("\n")
 		b.WriteString(styleConfirm.Render("unattended: the new agent will not stop to ask you before it acts"))

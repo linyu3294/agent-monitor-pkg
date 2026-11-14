@@ -1,15 +1,16 @@
 // Package wtbridge is the sole point of contact between the dashboard
-// and the worktrees skill's `wt` CLI.
+// and the machine's worktree tooling.
 //
-// We shell out to `wt` when it is installed, because it is the canonical
-// source of truth for worktree state on this machine. Create falls back
-// to `git worktree` under `<repo>/.worktrees/` when `wt` is absent, which
-// is the same layout the dashboard already scans.
+// `wt` (the worktrees skill) is preferred when it is installed, because
+// it is the canonical source of truth for worktree state there. It is
+// not required: every action has a git-native implementation in
+// gitops.go, using the `<repo>/.worktrees/<slug>` layout that Create,
+// the scanner, and `wt` all agree on. A machine without the skill can
+// still create, resume, rebase, open, and remove worktrees.
 package wtbridge
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -44,11 +45,14 @@ func (b *Bridge) Available() bool { return b.bin != "" }
 // Resume opens a fresh iTerm tab cded into <cwd>, running
 // `cursor-agent --resume <id>`. <cwd> should be the session's workspace
 // root (worktree path or primary repo).
+//
+// Without `wt` this is the same thing wt would have done: one tab, one
+// command. Resume never needed the skill, only a way to open a tab.
 func (b *Bridge) Resume(id, cwd string) error {
-	if !b.Available() {
-		return errors.New("wt binary unavailable (install the worktrees skill or set AM_WT_BIN)")
+	if b.Available() {
+		return runIn(cwd, b.bin, "resume", id, "--cwd", cwd)
 	}
-	return runIn(cwd, b.bin, "resume", id, "--cwd", cwd)
+	return OpenITerm(cwd, "cursor-agent --resume "+shellQuote(id))
 }
 
 // Agent identifies which CLI the `n` modal launches inside a fresh
@@ -287,13 +291,21 @@ func createWithGit(repo, branch, base, prompt string, agent Agent, approval Appr
 	if top == "" {
 		return fmt.Errorf("not a git repo: %s", repo)
 	}
+	resolved, err := resolveBase(top, base)
+	if err != nil {
+		return err
+	}
 	slug := slugFromBranch(branch)
-	dest := filepath.Join(top, ".worktrees", slug)
+	dest := worktreePathFor(top, slug)
+	if isDir(dest) {
+		return fmt.Errorf("worktree %q already exists at %s — remove it first, or pick another branch", slug, dest)
+	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}
-	out, err := runGit(top, "worktree", "add", "-b", branch, dest, base)
+	out, err := runGit(top, "worktree", "add", "-b", branch, dest, resolved)
 	if err != nil && bytes.Contains(out, []byte("branch named")) && bytes.Contains(out, []byte("already exists")) {
+		// The branch exists but isn't checked out anywhere: reuse it.
 		out, err = runGit(top, "worktree", "add", dest, branch)
 	}
 	if err != nil {
@@ -356,12 +368,11 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// Remove deletes the named worktree (and its branch) via `wt remove`.
-// If force is true, passes `--force` so dirty/untracked state and
-// branch-not-merged checks are bypassed.
+// Remove deletes the named worktree and its branch. If force is true,
+// dirty/untracked state and branch-not-merged checks are bypassed.
 func (b *Bridge) Remove(repo, slug string, force bool) error {
 	if !b.Available() {
-		return errors.New("wt binary unavailable")
+		return gitRemoveWorktree(repo, slug, force)
 	}
 	args := []string{"remove", slug}
 	if force {
@@ -370,10 +381,10 @@ func (b *Bridge) Remove(repo, slug string, force bool) error {
 	return runIn(repo, b.bin, args...)
 }
 
-// Sync runs `wt sync` (rebase the current worktree onto its base).
+// Sync rebases the worktree at <repo> onto its base.
 func (b *Bridge) Sync(repo string) error {
 	if !b.Available() {
-		return errors.New("wt binary unavailable")
+		return gitSync(repo)
 	}
 	return runIn(repo, b.bin, "sync")
 }
@@ -381,7 +392,7 @@ func (b *Bridge) Sync(repo string) error {
 // IDE opens an nvim+Diffview iTerm tab for an existing worktree.
 func (b *Bridge) IDE(repo, slug string) error {
 	if !b.Available() {
-		return errors.New("wt binary unavailable")
+		return gitIDE(repo, slug)
 	}
 	return runIn(repo, b.bin, "ide", slug)
 }
@@ -389,15 +400,23 @@ func (b *Bridge) IDE(repo, slug string) error {
 // Open opens the worktree in Cursor (the IDE).
 func (b *Bridge) Open(repo, slug string) error {
 	if !b.Available() {
-		return errors.New("wt binary unavailable")
+		return gitOpenWorktree(repo, slug)
 	}
 	return runIn(repo, b.bin, "open", slug)
 }
 
-// PathFor resolves a worktree slug to its absolute on-disk path via `wt path`.
+// PathFor resolves a worktree slug to its absolute on-disk path.
+//
+// The filesystem is checked first: the directory either exists in the
+// agreed layout or it doesn't, and that answer is cheaper and more
+// reliable than asking a tool that may not be installed.
 func (b *Bridge) PathFor(repo, slug string) (string, error) {
+	path := worktreePathFor(repo, slug)
+	if isDir(path) {
+		return path, nil
+	}
 	if !b.Available() {
-		return "", errors.New("wt binary unavailable")
+		return "", fmt.Errorf("worktree %q not found at %s", slug, path)
 	}
 	cmd := exec.Command(b.bin, "path", slug)
 	if repo != "" {
@@ -405,7 +424,7 @@ func (b *Bridge) PathFor(repo, slug string) (string, error) {
 	}
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("wt path failed: %w", err)
+		return "", fmt.Errorf("worktree %q not found at %s", slug, path)
 	}
 	return strings.TrimSpace(string(out)), nil
 }
