@@ -18,10 +18,11 @@ import (
 // no `wt` binary on the machine, which is the configuration that was
 // failing: remove, sync, and attach all returned "wt binary unavailable".
 
-func guiStubPATH(t *testing.T) {
+func guiStubPATH(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	script := "#!/bin/sh\nexit 0\n"
+	log := filepath.Join(dir, "calls.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$0 $*\" >> '" + log + "'\nexit 0\n"
 	for _, name := range []string{"osascript", "open"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
@@ -29,6 +30,7 @@ func guiStubPATH(t *testing.T) {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("AM_WT_BIN", filepath.Join(t.TempDir(), "missing-wt"))
+	return log
 }
 
 func gitTest(t *testing.T, dir string, args ...string) {
@@ -50,6 +52,9 @@ func tuiRepoWithWorktree(t *testing.T, slug string) (primary string, sess sessio
 	base, err := os.MkdirTemp("/tmp", "amwt")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if resolved, err := filepath.EvalSymlinks(base); err == nil {
+		base = resolved
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
 	primary = filepath.Join(base, "repo")
