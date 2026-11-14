@@ -44,12 +44,16 @@ func gitTest(t *testing.T, dir string, args ...string) {
 // returns the encoded session fields the scanner would produce for it.
 func tuiRepoWithWorktree(t *testing.T, slug string) (primary string, sess session.Session) {
 	t.Helper()
-	dir, err := filepath.EvalSymlinks(t.TempDir())
+	// Under /tmp with a hyphen-free base: project-dir decoding is
+	// ambiguous once the path contains `_` or `-`, because the encoder
+	// collapses them, and t.TempDir() is not guaranteed to avoid them.
+	base, err := os.MkdirTemp("/tmp", "amwt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	primary = filepath.Join(dir, "repo")
-	gitTest(t, dir, "init", "-b", "main", primary)
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	primary = filepath.Join(base, "repo")
+	gitTest(t, base, "init", "-b", "main", primary)
 	if err := os.WriteFile(filepath.Join(primary, "README"), []byte("x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -221,5 +225,38 @@ func TestAttachKeyWithoutWt(t *testing.T) {
 		if r.failed {
 			t.Fatalf("attach failed: %s", r.subtitle)
 		}
+	}
+}
+
+// Removal keeps the transcript but deletes the worktree, and tombstones
+// are in-memory — so the card must be dropped by rule, not by a map that
+// dies with the process. A live agent is the one exception.
+func TestOrphanedWorktreeRule(t *testing.T) {
+	primary, sess := tuiRepoWithWorktree(t, "feat-orphan")
+
+	if OrphanedWorktree(sess, false) {
+		t.Fatal("a live worktree was reported orphaned")
+	}
+	if OrphanedWorktree(sess, true) {
+		t.Fatal("an existing worktree was dropped")
+	}
+
+	// Remove the worktree the way `r` does.
+	if err := os.RemoveAll(filepath.Join(primary, ".worktrees", "feat-orphan")); err != nil {
+		t.Fatal(err)
+	}
+
+	if !OrphanedWorktree(sess, false) {
+		t.Fatal("a removed worktree card was not dropped")
+	}
+	if OrphanedWorktree(sess, true) {
+		t.Fatal("a running agent in a deleted worktree was hidden; it must stay killable")
+	}
+
+	// A primary-checkout card is never subject to this rule, even when
+	// its directory is gone.
+	primarySess := session.Session{ID: "x", ProjectDir: sess.ProjectDir}
+	if OrphanedWorktree(primarySess, false) {
+		t.Fatal("a primary card was dropped for having no worktree slug")
 	}
 }

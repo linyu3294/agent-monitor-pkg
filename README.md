@@ -109,6 +109,10 @@ This is a fully read-only view of the agent runtime — the dashboard never open
 
 A card's `cmd:` row names the CLI that resumes it (`cursor-agent --resume <id>` or `codewhale resume <id>`), and `am list` reports that `SOURCE` per row. `f` (follow) is Cursor-only; on a Codewhale card it points you at `a` instead of tailing the wrong file.
 
+**Removal never deletes context.** `r` signals the agent and, for a worktree card, deletes the worktree directory and its branch — including any uncommitted work in it. The conversation itself is untouched for both agent types: Cursor's transcript stays under `~/.cursor/projects/...` and Codewhale's log under `~/.codewhale/sessions/`, so `<cli> resume <id>` still replays the full history. The one thing removal destroys is the workspace, so resuming into a deleted worktree fails even though the transcript is intact.
+
+Once a worktree is gone its card stays gone — not just until the next restart. A card whose worktree no longer exists has nothing to act on, and tombstone hiding lives only in memory. The exception is an agent still running in a deleted worktree: it keeps its card so you can kill it.
+
 ## Subcommands
 
 ```

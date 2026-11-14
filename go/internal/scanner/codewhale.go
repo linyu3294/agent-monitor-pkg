@@ -788,6 +788,26 @@ func gitCheckoutIn(buf []byte) string {
 	return repoByMention(buf)
 }
 
+// usableWorkspace reports whether a value from a metadata key can be
+// trusted as the session's workspace.
+//
+// The directory normally has to exist: that stat is what keeps a file
+// path or a stale tool argument out of the workspace slot. A path under
+// `.worktrees/` is the exception. Removal deletes that directory, and
+// dropping the value would make the card fall back to the parent repo
+// and present itself as a primary session that never existed. Keeping it
+// lets the worktree be recognised as gone — which is how a removed card
+// stays removed.
+func usableWorkspace(v string) bool {
+	if !filepath.IsAbs(v) {
+		return false
+	}
+	if isDir(v) {
+		return true
+	}
+	return strings.Contains(v, "/.worktrees/")
+}
+
 func cwdFromKnownKeys(buf []byte) (string, string) {
 	for _, line := range bytes.Split(buf, []byte{'\n'}) {
 		line = bytes.TrimSpace(line)
@@ -799,10 +819,10 @@ func cwdFromKnownKeys(buf []byte) (string, string) {
 			continue
 		}
 		// A key is semantic evidence, but a key can also appear inside a
-		// tool payload (a file's `dir`, a repo's `root`). Stat keeps a
-		// file path out of the workspace slot.
+		// tool payload (a file's `dir`, a repo's `root`). The stat keeps
+		// a file path out of the workspace slot.
 		for _, k := range codewhaleKeyCandidates {
-			if v := jsonFindString(rec, k); filepath.IsAbs(v) && isDir(v) {
+			if v := jsonFindString(rec, k); usableWorkspace(v) {
 				return v, k
 			}
 		}
@@ -813,7 +833,7 @@ func cwdFromKnownKeys(buf []byte) (string, string) {
 	var doc any
 	if err := json.Unmarshal(bytes.TrimSpace(buf), &doc); err == nil {
 		for _, k := range codewhaleKeyCandidates {
-			if v := jsonFindString(doc, k); filepath.IsAbs(v) && isDir(v) {
+			if v := jsonFindString(doc, k); usableWorkspace(v) {
 				return v, k
 			}
 		}

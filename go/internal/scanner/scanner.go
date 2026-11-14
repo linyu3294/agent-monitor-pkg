@@ -640,6 +640,15 @@ func isGitRepo(path string) bool {
 	return st.IsDir() || st.Mode().IsRegular()
 }
 
+// IsOrphanedWorktree reports whether a session's project dir claims to be
+// worktree-backed but the worktree directory no longer exists on disk.
+//
+// Exported because the dashboard's card filters need it: a removed
+// worktree must not reappear after a restart (tombstones are in-memory),
+// and the scanner cannot drop it alone — a still-running agent in a
+// deleted worktree should stay visible so it can be killed.
+func IsOrphanedWorktree(projectDir string) bool { return isOrphanedWorktree(projectDir) }
+
 // isOrphanedWorktree returns true when a project-dir basename claims to
 // be worktree-backed (`-worktrees-<slug>` or `__worktrees__<slug>`) but
 // the corresponding `.worktrees/<slug>/` directory no longer exists on

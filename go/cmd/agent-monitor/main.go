@@ -173,6 +173,11 @@ func runList(idleMin, maxCards int) {
 		if tbl.IsWtManager(s.ID) {
 			continue
 		}
+		// Same rule as the dashboard: a removed worktree stays removed,
+		// but a live agent in one is still listed so it can be killed.
+		if tui.OrphanedWorktree(s, tbl.IsLive(s.ID)) {
+			continue
+		}
 		s.State = classifier.Classify(s, tbl)
 		s.PID = tbl.PID(s.ID)
 		wt := s.WorktreeSlug

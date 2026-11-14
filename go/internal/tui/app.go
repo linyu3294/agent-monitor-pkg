@@ -227,6 +227,13 @@ func (m *model) refreshCmd() tea.Cmd {
 				wtmID = s.ID
 				continue
 			}
+			// A worktree that no longer exists has nothing to act on. Drop
+			// it so `r` stays effective across restarts — tombstones live
+			// only in memory. A still-running agent is kept, because a
+			// deleted workspace is exactly when you want a way to kill it.
+			if OrphanedWorktree(s, m.proc.IsLive(s.ID)) {
+				continue
+			}
 			if s.WorktreeSlug != "" {
 				if seenWorktree[s.ProjectDir] {
 					continue
@@ -411,6 +418,23 @@ func (m *model) runRemoveCmd(label, key string, do func() error) tea.Cmd {
 		}
 		return wtResultMsg{title: label, subtitle: ""}
 	}
+}
+
+// OrphanedWorktree reports whether a card should be dropped because its
+// worktree no longer exists.
+//
+// Removal deletes the worktree but never the transcript, and card
+// tombstones are in-memory, so without this a removed card returns on the
+// next restart — presenting itself as a primary session on the parent
+// repo, which it never was.
+//
+// A live agent keeps its card even in a deleted worktree: that is exactly
+// when you need the dashboard to reach in and kill it.
+func OrphanedWorktree(s session.Session, live bool) bool {
+	if live || s.WorktreeSlug == "" {
+		return false
+	}
+	return scanner.IsOrphanedWorktree(s.ProjectDir)
 }
 
 // tombstoneKey identifies a card for `r` removal. Worktree cards are
