@@ -68,23 +68,28 @@ Re-run `install.sh` any time — it's idempotent.
 is on `PATH` the agent field defaults to it, so the common case needs no extra
 keystroke; `←` / `→` switch to `cursor-agent`.
 
-The `asks:` field is the approval posture, and **it is yours to choose** — the
-dashboard never switches it for you. It defaults to `on-request`, so a new agent
-stops and asks before it acts. `←` / `→` cycles:
+The `asks:` field is the approval posture for **cursor-agent**, and **it is
+yours to choose** — the dashboard never switches it for you. It defaults to
+`on-request`, so a new cursor-agent stops and asks before it acts. `←` / `→`
+cycles:
 
 - `on-request` — ask before acting (default)
-- `auto` — the agent applies codewhale's own auto approval policy; `on-request` asks you every time
-- `never (unattended)` — run without stopping at all, for a worktree you open and walk away from. The modal warns when you select it.
-- `untrusted (strict)` — refuse unless already trusted
+- `auto` — Smart Auto (`--auto-review`): safe calls run, the rest ask
+- `never (unattended)` — run without stopping at all (`--yolo`), for a worktree you open and walk away from. The modal warns when you select it.
+- `untrusted (strict)` — cursor-agent has no stricter flag, so this is the default
 
-The posture maps per CLI, so each agent uses the closest thing it actually has:
+Codewhale does not take this row. Its permission dial is inside the session:
+**Shift+Tab** cycles Ask → Auto-Review → Full Access, which is how you leave
+the Auto-Review guardian. Passing `--approval-policy` makes that flag the
+controlling source, and Shift+Tab then does nothing. The session starts on
+the posture saved in `~/.codewhale/settings.toml`.
 
 | Posture | codewhale | cursor-agent |
 |---|---|---|
-| `on-request` | `--approval-policy on-request` | default |
-| `auto` | `--approval-policy auto` | `--auto-review` (Smart Auto) |
-| `never` | `--approval-policy never` | `--yolo` |
-| `untrusted` | `--approval-policy untrusted` | default (no stricter flag exists) |
+| `on-request` | not pinned; Shift+Tab in the session | default |
+| `auto` | not pinned; Shift+Tab in the session | `--auto-review` (Smart Auto) |
+| `never` | not pinned; Shift+Tab in the session | `--yolo` |
+| `untrusted` | not pinned; Shift+Tab in the session | default (no stricter flag exists) |
 
 Codewhale is always started with the sandbox off (`--sandbox-mode danger-full-access`), so its shell is the system shell, the same way `cursor-agent --sandbox disabled` is. When `wt` is installed, `auto` deliberately bypasses `wt create --iterm` — wt can only express `--yolo`, so routing auto through it would silently launch a different posture.
 

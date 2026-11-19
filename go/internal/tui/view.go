@@ -463,11 +463,13 @@ func (m *model) viewNewWt() string {
 	}
 	b.WriteString("\n")
 	b.WriteString(styleDim.Render("repo is the git checkout · base is detected from the repo · agent is the CLI launched in the new tab"))
-	if m.form.approval == wtbridge.ApprovalNever {
+	if m.form.agent == wtbridge.AgentCodewhale {
+		b.WriteString("\n")
+		b.WriteString(styleDim.Render("codewhale: Shift+Tab in the session cycles Ask → Auto-Review → Full Access. asks is not pinned — that flag locks the dial"))
+	} else if m.form.approval == wtbridge.ApprovalNever {
 		b.WriteString("\n")
 		b.WriteString(styleConfirm.Render("unattended: the new agent will not stop to ask you before it acts"))
-	}
-	if m.form.approval == wtbridge.ApprovalAuto {
+	} else if m.form.approval == wtbridge.ApprovalAuto {
 		b.WriteString("\n")
 		b.WriteString(styleDim.Render("auto: the agent applies its own approval policy · on-request asks you every time"))
 	}

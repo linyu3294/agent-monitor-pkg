@@ -285,16 +285,23 @@ func (a Agent) LaunchCommand(prompt string, approval Approval) string {
 // launched with `--sandbox disabled`. workspace-write is a sandbox shell: it
 // hides the system terminal, so ~/.bash_profile and the AWS CLI are not there.
 // danger-full-access is the mode Codewhale documents as disabling that sandbox.
-// The approval posture is whatever the user picked:
 //
-//	on-request  codewhale --approval-policy on-request | cursor-agent (default)
-//	auto        codewhale --approval-policy auto        | cursor-agent --auto-review
-//	never       codewhale --approval-policy never       | cursor-agent --yolo
-//	untrusted   codewhale --approval-policy untrusted   | cursor-agent (default)
+// The approval posture is not passed. Codewhale's permission dial is inside
+// the session: Shift+Tab cycles Ask → Auto-Review → Full Access, which is
+// how the user leaves the Auto-Review guardian. `--approval-policy` is a
+// controlling source ("Approval posture is controlled by …; change that
+// source first"), so the dial does not move and the guardian cannot be
+// left. The session starts on the posture saved in settings.toml.
 //
-// cursor-agent is "Smart Auto" under --auto-review: a classifier runs safe tool
-// calls and prompts for the rest. It has no stricter-than-default flag, so
-// untrusted maps to its default behaviour rather than inventing one.
+// cursor-agent takes the posture as a flag. It is "Smart Auto" under
+// --auto-review: a classifier runs safe tool calls and prompts for the
+// rest. It has no stricter-than-default flag, so untrusted maps to its
+// default behaviour rather than inventing one.
+//
+//	on-request  cursor-agent (default)
+//	auto        cursor-agent --auto-review
+//	never       cursor-agent --yolo
+//	untrusted   cursor-agent (default)
 //
 // cursor-agent takes --sandbox enabled|disabled. When the posture is off,
 // cursor-agent gets no flag at all — its effective default is whatever its
@@ -305,8 +312,7 @@ func (a Agent) LaunchCommandWith(prompt string, approval Approval, network Netwo
 	cmd := "cursor-agent"
 	switch a {
 	case AgentCodewhale:
-		cmd = "codewhale --approval-policy " + approval.Flag() +
-			" --sandbox-mode danger-full-access --skip-onboarding --fresh"
+		cmd = "codewhale --sandbox-mode danger-full-access --skip-onboarding --fresh"
 	default:
 		switch approval {
 		case ApprovalAuto:

@@ -99,24 +99,24 @@ func TestLaunchCommand(t *testing.T) {
 		{"cursor untrusted maps to its default", AgentCursor, ApprovalUntrusted, "", "cursor-agent"},
 		{"cursor prompt", AgentCursor, ApprovalOnRequest, "fix it", "cursor-agent -- 'fix it'"},
 		{
-			"codewhale asks by default", AgentCodewhale, ApprovalOnRequest, "",
-			"codewhale --approval-policy on-request --sandbox-mode danger-full-access --skip-onboarding --fresh",
+			"codewhale leaves the permission dial free", AgentCodewhale, ApprovalOnRequest, "",
+			"codewhale --sandbox-mode danger-full-access --skip-onboarding --fresh",
 		},
 		{
-			"codewhale auto", AgentCodewhale, ApprovalAuto, "",
-			"codewhale --approval-policy auto --sandbox-mode danger-full-access --skip-onboarding --fresh",
+			"codewhale auto does not pin the guardian", AgentCodewhale, ApprovalAuto, "",
+			"codewhale --sandbox-mode danger-full-access --skip-onboarding --fresh",
 		},
 		{
-			"codewhale unattended only when chosen", AgentCodewhale, ApprovalNever, "",
-			"codewhale --approval-policy never --sandbox-mode danger-full-access --skip-onboarding --fresh",
+			"codewhale never does not pin the dial", AgentCodewhale, ApprovalNever, "",
+			"codewhale --sandbox-mode danger-full-access --skip-onboarding --fresh",
 		},
 		{
-			"codewhale strict", AgentCodewhale, ApprovalUntrusted, "",
-			"codewhale --approval-policy untrusted --sandbox-mode danger-full-access --skip-onboarding --fresh",
+			"codewhale untrusted does not pin the dial", AgentCodewhale, ApprovalUntrusted, "",
+			"codewhale --sandbox-mode danger-full-access --skip-onboarding --fresh",
 		},
 		{
 			"codewhale prompt", AgentCodewhale, ApprovalNever, "it's broken",
-			`codewhale --approval-policy never --sandbox-mode danger-full-access --skip-onboarding --fresh -- 'it'\''s broken'`,
+			`codewhale --sandbox-mode danger-full-access --skip-onboarding --fresh -- 'it'\''s broken'`,
 		},
 	}
 	for _, tc := range tests {
@@ -172,8 +172,12 @@ func TestApprovalAutoIsDistinct(t *testing.T) {
 	if got := AgentCursor.LaunchCommand("", ApprovalAuto); !strings.Contains(got, "--auto-review") {
 		t.Fatalf("cursor auto = %q, want --auto-review", got)
 	}
-	if got := AgentCodewhale.LaunchCommand("", ApprovalAuto); !strings.Contains(got, "--approval-policy auto") {
-		t.Fatalf("codewhale auto = %q, want --approval-policy auto", got)
+	got := AgentCodewhale.LaunchCommand("", ApprovalAuto)
+	if strings.Contains(got, "--approval-policy") {
+		t.Fatalf("codewhale launch pins the permission dial: %q", got)
+	}
+	if !strings.Contains(got, "--sandbox-mode danger-full-access") {
+		t.Fatalf("codewhale launch = %q, want the sandbox off", got)
 	}
 	if got := ApprovalAuto.Flag(); got != "auto" {
 		t.Fatalf("ApprovalAuto.Flag() = %q, want auto", got)
@@ -246,30 +250,32 @@ func TestApprovalFlagsAcceptedByCodewhale(t *testing.T) {
 	}
 }
 
-// The flags must come out in the order codewhale parses them: global
-// options before any subcommand or prompt.
+// Codewhale's permission dial is Shift+Tab inside the session. Pinning
+// --approval-policy locks that dial, so the Auto-Review guardian cannot be
+// left. The sandbox flag still precedes the prompt separator.
 func TestCodewhaleLaunchFlagOrder(t *testing.T) {
 	got := AgentCodewhale.LaunchCommand("do the thing", ApprovalAuto)
+	if strings.Contains(got, "--approval-policy") {
+		t.Fatalf("launch pins the permission dial: %q", got)
+	}
 	tokens := strings.Fields(got)
-	policyAt, sandboxAt, sepAt := -1, -1, -1
+	sandboxAt, sepAt := -1, -1
 	for i, tok := range tokens {
 		switch tok {
-		case "--approval-policy":
-			policyAt = i
 		case "--sandbox-mode":
 			sandboxAt = i
 		case "--":
 			sepAt = i
 		}
 	}
-	if policyAt < 0 || sandboxAt < 0 || sepAt < 0 {
+	if sandboxAt < 0 || sepAt < 0 {
 		t.Fatalf("launch command missing a required token: %q", got)
 	}
-	if policyAt > sepAt || sandboxAt > sepAt {
+	if sandboxAt > sepAt {
 		t.Fatalf("a global option was placed after the prompt separator: %q", got)
 	}
-	if tokens[policyAt+1] != "auto" {
-		t.Fatalf("approval policy token = %q, want auto", tokens[policyAt+1])
+	if tokens[sandboxAt+1] != "danger-full-access" {
+		t.Fatalf("sandbox token = %q, want danger-full-access", tokens[sandboxAt+1])
 	}
 }
 
@@ -285,15 +291,15 @@ func TestLaunchCommandNetwork(t *testing.T) {
 	}{
 		{
 			"codewhale confined by default", AgentCodewhale, ApprovalOnRequest, NetworkOff,
-			"codewhale --approval-policy on-request --sandbox-mode danger-full-access --skip-onboarding --fresh",
+			"codewhale --sandbox-mode danger-full-access --skip-onboarding --fresh",
 		},
 		{
 			"codewhale egress lifts the sandbox", AgentCodewhale, ApprovalOnRequest, NetworkOn,
-			"codewhale --approval-policy on-request --sandbox-mode danger-full-access --skip-onboarding --fresh",
+			"codewhale --sandbox-mode danger-full-access --skip-onboarding --fresh",
 		},
 		{
-			"network does not disturb approval", AgentCodewhale, ApprovalNever, NetworkOn,
-			"codewhale --approval-policy never --sandbox-mode danger-full-access --skip-onboarding --fresh",
+			"network does not pin the permission dial", AgentCodewhale, ApprovalNever, NetworkOn,
+			"codewhale --sandbox-mode danger-full-access --skip-onboarding --fresh",
 		},
 		{
 			"cursor confined emits no sandbox flag", AgentCursor, ApprovalOnRequest, NetworkOff,
