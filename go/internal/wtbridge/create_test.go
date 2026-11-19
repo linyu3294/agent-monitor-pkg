@@ -379,13 +379,13 @@ func TestLaunchLine(t *testing.T) {
 		},
 		{
 			"setup runs after the cd and before the agent",
-			"/tmp/repo", "aws sso login --profile bora", "codewhale --approval-policy on-request",
-			"cd '/tmp/repo' && aws sso login --profile bora && codewhale --approval-policy on-request",
+			"/tmp/repo", "aws-login bora", "codewhale --approval-policy on-request",
+			`cd '/tmp/repo' && if [ -n "$BASH_VERSION" ] && [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile"; fi && aws-login bora && codewhale --approval-policy on-request`,
 		},
 		{
 			"a failing setup still short-circuits the agent",
 			"/tmp/repo", "false", "cursor-agent",
-			"cd '/tmp/repo' && false && cursor-agent",
+			`cd '/tmp/repo' && if [ -n "$BASH_VERSION" ] && [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile"; fi && false && cursor-agent`,
 		},
 		{
 			"cwd is quoted",

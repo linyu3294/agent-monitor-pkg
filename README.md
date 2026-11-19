@@ -95,7 +95,7 @@ installed, `auto` deliberately bypasses `wt create --iterm` — wt can only expr
 
 `net:` is a second, separate choice — "may you run this?" and "can you reach the
 internet?" are different questions, and answering one should not grant the other.
-It defaults to `off` and is opt-in per launch, like `never (unattended)`.
+The dashboard starts it at `on`. Set `AM_DEFAULT_NET=off` to confine a launch. It stays a per-launch choice, like `never (unattended)`.
 
 Neither CLI offers egress on its own, so `on` means the widest mode each one has:
 
@@ -123,10 +123,13 @@ same tab, immediately before the agent starts. It exists for setup the agent mus
 inherit — an SSO login, `direnv allow`, `nvm use`, `npm ci` — because a command run
 in some other terminal is invisible to the agent's shell.
 
-The tab is composed as one line:
+The tab is composed as one line. When `before` is set, bash first sources
+`~/.bash_profile` in that same shell, so a function or alias defined there
+(`aws-login`, for example) exists, and an `export` it makes is inherited by the
+agent. A non-login interactive bash does not read `.bash_profile` on its own.
 
 ```sh
-cd '<worktree>' && <before> && <agent command>
+cd '<worktree>' && . ~/.bash_profile && <before> && <agent command>
 ```
 
 `&&`, not `;`, on purpose: if the setup command fails, the agent does not start and
@@ -195,8 +198,8 @@ am help           subcommand list + env vars
 | `AM_PROJECTS_DIR` | `~/.cursor/projects` | where transcripts live |
 | `AM_WT_BIN` | `~/.claude/skills/worktrees/scripts/wt` | path to the `wt` CLI |
 | `AM_DEFAULT_APPROVAL` | `on-request` | initial `asks:` value in the `n` modal: `on-request`, `auto`, `never`, `untrusted` |
-| `AM_DEFAULT_NET` | `off` | initial `net:` value: `off` or `on` (full access) |
-| `AM_DEFAULT_BEFORE` | unset | initial `before:` command, e.g. `aws sso login --profile bora` |
+| `AM_DEFAULT_NET` | `on` | initial `net:` value: `off` or `on` (full access) |
+| `AM_DEFAULT_BEFORE` | unset | initial `before:` command, e.g. `aws-login bora` |
 
 The three `AM_DEFAULT_*` vars only decide where the `n` modal's cursor starts.
 They are still editable per launch, and the modal still shows the egress warning
@@ -210,7 +213,7 @@ in your shell profile if you always want the same starting point:
 
 ```sh
 export AM_DEFAULT_NET=on
-export AM_DEFAULT_BEFORE='aws sso login --profile bora'
+export AM_DEFAULT_BEFORE='aws-login bora'
 export AM_DEFAULT_APPROVAL=on-request
 ```
 

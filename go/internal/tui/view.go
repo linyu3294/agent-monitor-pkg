@@ -417,7 +417,7 @@ Multi-agent
 Worktree lifecycle
   n    new worktree (repo / branch / base / agent / approval / net / before / prompt)
        approval: on-request (default) · auto · never · untrusted
-       net: off (workspace-write, default) · on (full access, no sandbox)
+       net: on (full access, no sandbox, default) · off (workspace-write)
        before: optional shell command run before the agent starts
   r    remove selected (y/N confirm)
   s    sync (rebase onto base)

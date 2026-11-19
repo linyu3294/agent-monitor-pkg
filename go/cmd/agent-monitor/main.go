@@ -63,7 +63,7 @@ func main() {
 		IdleThreshold:   time.Duration(*idleMin) * time.Minute,
 		MaxCards:        *maxCards,
 		DefaultApproval: envApproval("AM_DEFAULT_APPROVAL", wtbridge.ApprovalOnRequest),
-		DefaultNetwork:  envNetwork("AM_DEFAULT_NET", wtbridge.NetworkOff),
+		DefaultNetwork:  envNetwork("AM_DEFAULT_NET", wtbridge.NetworkOn),
 		DefaultBefore:   strings.TrimSpace(os.Getenv("AM_DEFAULT_BEFORE")),
 	}
 	prog := tea.NewProgram(tui.New(opts, version), tea.WithAltScreen(), tea.WithMouseCellMotion())

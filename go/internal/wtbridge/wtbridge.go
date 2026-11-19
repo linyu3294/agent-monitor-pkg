@@ -525,15 +525,28 @@ func shellQuote(s string) string {
 // launchLine composes what gets typed into a new tab: cd into the worktree, the
 // optional setup command, then the agent. && throughout, so a failed cd or a
 // failed setup leaves the agent unlaunched with the error still on screen.
+//
+// A setup command runs in the same shell as the agent, so an export it makes
+// (AWS_PROFILE from a login function, for example) is what the agent inherits.
+// iTerm's new tab is often an interactive non-login bash, which reads .bashrc
+// and not .bash_profile, so a function defined only in .bash_profile is missing.
+// Source that file first, in this shell, before the setup command.
 func launchLine(cwd, before, cmd string) string {
 	if cwd == "" {
 		cwd = "$HOME"
 	}
 	full := "cd " + shellQuote(cwd)
 	if setup := strings.TrimSpace(before); setup != "" {
-		full += " && " + setup
+		full += " && " + bashProfileSnippet() + " && " + setup
 	}
 	return full + " && " + cmd
+}
+
+// bashProfileSnippet loads ~/.bash_profile when this shell is bash and the file
+// exists. The if returns success when there is nothing to load, so a setup
+// command that does not need the profile still runs.
+func bashProfileSnippet() string {
+	return `if [ -n "$BASH_VERSION" ] && [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile"; fi`
 }
 
 // Remove deletes the named worktree and its branch. If force is true,
