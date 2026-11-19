@@ -190,33 +190,132 @@ func (a Approval) Next(delta int) Approval {
 	return approvals[idx]
 }
 
-// LaunchCommand is the shell line typed into the new iTerm tab.
+// Network is the network posture a newly launched agent runs with.
 //
-// The sandbox stays at workspace-write so the agent can edit freely
-// inside the new worktree without reaching the rest of the machine. The
-// approval posture is whatever the user picked:
+// It is separate from Approval because the two are genuinely different
+// questions — "may you run this?" and "can you reach the internet?" — and
+// conflating them would mean granting disk-wide access just to answer a
+// question, or reaching the network just to answer a prompt.
+//
+// The zero value is NetworkOff, so a zero-valued config, a forgotten field,
+// or a caller that predates this type keeps the confined default.
+type Network int
+
+const (
+	// NetworkOff confines the agent to its worktree with no egress. Default.
+	NetworkOff Network = iota
+	// NetworkOn gives the agent egress. It is explicit opt-in only: an agent
+	// that can reach the internet can also reach any credential the shell
+	// already holds, so the human decides per launch.
+	NetworkOn
+)
+
+// networks is the cycle order shown in the `n` modal: confined first, so a
+// stray ←/→ lands back on the safer value.
+var networks = []Network{NetworkOff, NetworkOn}
+
+// String is the label rendered in the modal. It states what the setting
+// actually does rather than naming the network alone, because for codewhale
+// there is no network-only mode: egress comes with danger-full-access, which
+// lifts the filesystem confinement too. Calling this "network: on" would be a
+// promise the CLI cannot keep.
+func (n Network) String() string {
+	if n == NetworkOn {
+		return "on (full access)"
+	}
+	return "off (workspace-write)"
+}
+
+// Next returns the network delta places away, wrapping around.
+func (n Network) Next(delta int) Network {
+	idx := 0
+	for i, cand := range networks {
+		if cand == n {
+			idx = i
+			break
+		}
+	}
+	idx = ((idx+delta)%len(networks) + len(networks)) % len(networks)
+	return networks[idx]
+}
+
+// ParseNetwork reads a configured network posture. The accepted spellings are
+// the modal labels without the parenthetical, plus their obvious synonyms, so a
+// shell profile can say AM_DEFAULT_NET=on and a config file can say
+// "workspace-write" without either being a special case.
+//
+// The second return distinguishes "unrecognised" from "explicitly off". The
+// caller needs that: silently falling back to off would hide a typo in exactly
+// the setting where a typo is most costly to diagnose.
+func ParseNetwork(s string) (Network, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "on", "full", "full-access", "danger-full-access", "network":
+		return NetworkOn, true
+	case "off", "confined", "workspace-write", "none":
+		return NetworkOff, true
+	}
+	return NetworkOff, false
+}
+
+// ParseApproval reads a configured approval posture. It accepts the same
+// values as codewhale's --approval-policy plus the modal's long labels.
+func ParseApproval(s string) (Approval, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "on-request", "ask":
+		return ApprovalOnRequest, true
+	case "auto":
+		return ApprovalAuto, true
+	case "never", "never (unattended)", "unattended":
+		return ApprovalNever, true
+	case "untrusted", "untrusted (strict)", "strict":
+		return ApprovalUntrusted, true
+	}
+	return ApprovalOnRequest, false
+}
+
+// LaunchCommand is LaunchCommandWith at the confined network posture, which is
+// the shape every pre-existing caller expects.
+func (a Agent) LaunchCommand(prompt string, approval Approval) string {
+	return a.LaunchCommandWith(prompt, approval, NetworkOff)
+}
+
+// LaunchCommandWith is the shell line typed into the new iTerm tab.
+//
+// Codewhale is launched with the sandbox off, the same way cursor-agent is
+// launched with `--sandbox disabled`. workspace-write is a sandbox shell: it
+// hides the system terminal, so ~/.bash_profile and the AWS CLI are not there.
+// danger-full-access is the mode Codewhale documents as disabling that sandbox.
+// The approval posture is whatever the user picked:
 //
 //	on-request  codewhale --approval-policy on-request | cursor-agent (default)
 //	auto        codewhale --approval-policy auto        | cursor-agent --auto-review
 //	never       codewhale --approval-policy never       | cursor-agent --yolo
 //	untrusted   codewhale --approval-policy untrusted   | cursor-agent (default)
 //
-// cursor-agent is "Smart Auto" under --auto-review: a classifier runs
-// safe tool calls and prompts for the rest. It has no stricter-than-
-// default flag, so untrusted maps to its default behaviour rather than
-// inventing one.
-func (a Agent) LaunchCommand(prompt string, approval Approval) string {
+// cursor-agent is "Smart Auto" under --auto-review: a classifier runs safe tool
+// calls and prompts for the rest. It has no stricter-than-default flag, so
+// untrusted maps to its default behaviour rather than inventing one.
+//
+// cursor-agent takes --sandbox enabled|disabled. When the posture is off,
+// cursor-agent gets no flag at all — its effective default is whatever its
+// config says, and adding `--sandbox enabled` would change behaviour for
+// users who never asked for it. Codewhale has no such default: omitting the
+// flag leaves the sandbox shell in place, so it is always started unsandboxed.
+func (a Agent) LaunchCommandWith(prompt string, approval Approval, network Network) string {
 	cmd := "cursor-agent"
 	switch a {
 	case AgentCodewhale:
 		cmd = "codewhale --approval-policy " + approval.Flag() +
-			" --sandbox-mode workspace-write --skip-onboarding --fresh"
+			" --sandbox-mode danger-full-access --skip-onboarding --fresh"
 	default:
 		switch approval {
 		case ApprovalAuto:
 			cmd += " --auto-review"
 		case ApprovalNever:
 			cmd += " --yolo"
+		}
+		if network == NetworkOn {
+			cmd += " --sandbox disabled"
 		}
 	}
 	if strings.TrimSpace(prompt) != "" {
@@ -225,28 +324,62 @@ func (a Agent) LaunchCommand(prompt string, approval Approval) string {
 	return cmd
 }
 
-// Create spawns a new worktree at <branch> based on <base> and opens an
-// iTerm tab running <agent> with the chosen <approval> posture. When the
-// wt CLI is installed and the agent is cursor-agent, this shells out to
-// `wt create --iterm` — except for the auto posture, which wt cannot
-// express: it only knows `--yolo`, so routing auto through it would
-// silently give the user a different posture than the one they picked.
-// Everything else creates `<repo>/.worktrees/<slug>` with git directly —
-// the layout the dashboard already scans — and opens the tab itself, so
-// `n` works without the worktrees skill and non-cursor launchers are not
-// forced through wt. <prompt> may be empty.
+// LaunchOptions is everything the `n` modal decides about a new agent. It is a
+// struct rather than a parameter list because the list has grown past the point
+// where positional arguments stay readable — two postures plus two optional
+// strings is where a swapped argument stops being obvious at the call site.
+//
+// The zero value is the confined, asks-first default that Create has always
+// used, so an unset field cannot widen what an agent may do.
+type LaunchOptions struct {
+	Agent    Agent
+	Approval Approval
+	Network  Network
+	// Before is an optional shell command run in the worktree before the agent.
+	Before string
+	// Prompt is passed to the agent as its opening instruction.
+	Prompt string
+}
+
+// wtExpressible reports whether `wt create --iterm` can express this launch.
+// wt knows only --yolo and --prompt, so it silently drops anything else: the
+// auto posture, a setup command, or a network request would each come out the
+// other side as a launch the user did not choose. Those go through git instead.
+func (o LaunchOptions) wtExpressible() bool {
+	return o.Agent == AgentCursor &&
+		o.Approval != ApprovalAuto &&
+		o.Network == NetworkOff &&
+		strings.TrimSpace(o.Before) == ""
+}
+
+// Create spawns a new worktree at <branch> based on <base> and opens an iTerm
+// tab running <agent> with the chosen <approval> posture. It is
+// CreateWithOptions with the fields that predate it.
 func (b *Bridge) Create(repo, branch, base, prompt string, agent Agent, approval Approval) error {
-	if b.Available() && agent == AgentCursor && approval != ApprovalAuto {
+	return b.CreateWithOptions(repo, branch, base, LaunchOptions{
+		Agent:    agent,
+		Approval: approval,
+		Prompt:   prompt,
+	})
+}
+
+// CreateWithOptions spawns the worktree and opens the tab. Everything except a
+// launch wt can express is created as `<repo>/.worktrees/<slug>` with git
+// directly — the layout the dashboard already scans — and the tab is opened
+// here, so `n` works without the worktrees skill and non-cursor launchers are
+// not forced through wt.
+func (b *Bridge) CreateWithOptions(repo, branch, base string, opts LaunchOptions) error {
+	if b.Available() && opts.wtExpressible() {
 		args := []string{"create", branch, "--base", base, "--iterm"}
-		if approval == ApprovalNever {
+		if opts.Approval == ApprovalNever {
 			args = append(args, "--yolo")
 		}
-		if prompt != "" {
-			args = append(args, "--prompt", prompt)
+		if opts.Prompt != "" {
+			args = append(args, "--prompt", opts.Prompt)
 		}
 		return runIn(repo, b.bin, args...)
 	}
-	return createWithGit(repo, branch, base, prompt, agent, approval)
+	return createWithGit(repo, branch, base, opts)
 }
 
 // GitPrimary returns the main checkout for the git repo containing dir.
@@ -294,7 +427,7 @@ func expandUserPath(dir string) string {
 	return filepath.Clean(dir)
 }
 
-func createWithGit(repo, branch, base, prompt string, agent Agent, approval Approval) error {
+func createWithGit(repo, branch, base string, opts LaunchOptions) error {
 	top := GitPrimary(repo)
 	if top == "" {
 		return fmt.Errorf("not a git repo: %s", repo)
@@ -326,7 +459,7 @@ func createWithGit(repo, branch, base, prompt string, agent Agent, approval Appr
 	if os.Getenv("WT_NO_OPEN") == "1" {
 		return nil
 	}
-	if err := OpenITerm(dest, agent.LaunchCommand(prompt, approval)); err != nil {
+	if err := OpenITermWithSetup(dest, opts.Before, opts.Agent.LaunchCommandWith(opts.Prompt, opts.Approval, opts.Network)); err != nil {
 		return fmt.Errorf("worktree created at %s, but opening iTerm failed: %w", dest, err)
 	}
 	return nil
@@ -351,10 +484,19 @@ func runGit(dir string, args ...string) ([]byte, error) {
 // OpenITerm spawns a new iTerm2 tab cd'ing into cwd and running cmd.
 // Best-effort — returns an AppleScript error verbatim if iTerm refuses.
 func OpenITerm(cwd, cmd string) error {
-	if cwd == "" {
-		cwd = "$HOME"
-	}
-	full := "cd " + shellQuote(cwd) + " && " + cmd
+	return openITermLine(cwd, "", cmd)
+}
+
+// OpenITermWithSetup is OpenITerm with a command run after the cd and before
+// cmd. The two are joined with && rather than ; on purpose: a failed setup means
+// the agent never starts, so a half-prepared environment cannot be mistaken for
+// a working one. The tab stops at the shell prompt with the error on screen.
+func OpenITermWithSetup(cwd, before, cmd string) error {
+	return openITermLine(cwd, before, cmd)
+}
+
+func openITermLine(cwd, before, cmd string) error {
+	full := launchLine(cwd, before, cmd)
 	asLine := strings.ReplaceAll(full, `\`, `\\`)
 	asLine = strings.ReplaceAll(asLine, `"`, `\"`)
 	script := fmt.Sprintf(`tell application "iTerm"
@@ -374,6 +516,33 @@ end tell`, asLine, asLine)
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// launchLine composes what gets typed into a new tab: cd into the worktree, the
+// optional setup command, then the agent. && throughout, so a failed cd or a
+// failed setup leaves the agent unlaunched with the error still on screen.
+//
+// A setup command runs in the same shell as the agent, so an export it makes
+// (AWS_PROFILE from a login function, for example) is what the agent inherits.
+// iTerm's new tab is often an interactive non-login bash, which reads .bashrc
+// and not .bash_profile, so a function defined only in .bash_profile is missing.
+// Source that file first, in this shell, before the setup command.
+func launchLine(cwd, before, cmd string) string {
+	if cwd == "" {
+		cwd = "$HOME"
+	}
+	full := "cd " + shellQuote(cwd)
+	if setup := strings.TrimSpace(before); setup != "" {
+		full += " && " + bashProfileSnippet() + " && " + setup
+	}
+	return full + " && " + cmd
+}
+
+// bashProfileSnippet loads ~/.bash_profile when this shell is bash and the file
+// exists. The if returns success when there is nothing to load, so a setup
+// command that does not need the profile still runs.
+func bashProfileSnippet() string {
+	return `if [ -n "$BASH_VERSION" ] && [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile"; fi`
 }
 
 // Remove deletes the named worktree and its branch. If force is true,

@@ -53,7 +53,7 @@ Re-run `install.sh` any time — it's idempotent.
 | `y` | copy chat id to clipboard |
 | `o` | open worktree in Cursor |
 | `i` | open nvim + Diffview iTerm tab |
-| `n` | new worktree (modal: repo / branch / base / agent / approval / prompt) |
+| `n` | new worktree (modal: repo / branch / base / agent / approval / net / before / prompt) |
 | `r` | kill agent (and remove worktree if attached) |
 | `s` | sync — rebase the worktree onto its base |
 | `x` | pause / resume the selected agent (`SIGSTOP` / `SIGCONT`) |
@@ -86,10 +86,59 @@ The posture maps per CLI, so each agent uses the closest thing it actually has:
 | `never` | `--approval-policy never` | `--yolo` |
 | `untrusted` | `--approval-policy untrusted` | default (no stricter flag exists) |
 
-The sandbox stays `workspace-write` in every posture: the agent edits freely
-inside its worktree and still can't reach the rest of the machine. When `wt` is
-installed, `auto` deliberately bypasses `wt create --iterm` — wt can only express
-`--yolo`, so routing auto through it would silently launch a different posture.
+Codewhale is always started with the sandbox off (`--sandbox-mode danger-full-access`), so its shell is the system shell, the same way `cursor-agent --sandbox disabled` is. When `wt` is installed, `auto` deliberately bypasses `wt create --iterm` — wt can only express `--yolo`, so routing auto through it would silently launch a different posture.
+
+## Network posture
+
+`net:` is a second, separate choice — "may you run this?" and "can you reach the
+internet?" are different questions, and answering one should not grant the other.
+The dashboard starts it at `on`. Set `AM_DEFAULT_NET=off` to leave cursor-agent on its configured default. It stays a per-launch choice, like `never (unattended)`.
+
+Codewhale has no separate network switch. Its only unsandboxed mode is `danger-full-access`, so every codewhale launch uses that, whichever way `net:` is set. `net:` changes cursor-agent only:
+
+| `net:` | codewhale | cursor-agent |
+|---|---|---|
+| `off (workspace-write)` | `--sandbox-mode danger-full-access` | no flag (its configured default) |
+| `on (full access)` | `--sandbox-mode danger-full-access` | `--sandbox disabled` |
+
+`danger-full-access` and `--sandbox disabled` both turn the sandbox off, so the agent gets the system shell and the whole filesystem. Any credential that shell already holds — an AWS session from `aws-login`, an SSH agent, a token in the environment — is reachable by the agent.
+
+When `net:` is `off`, cursor-agent gets no sandbox flag at all. Its effective
+default is whatever its own config says, and adding `--sandbox enabled` would
+change behaviour for people who never asked for it.
+
+## Running a command before the agent
+
+The `before:` field is an optional shell command run in the new worktree, in the
+same tab, immediately before the agent starts. It exists for setup the agent must
+inherit — an SSO login, `direnv allow`, `nvm use`, `npm ci` — because a command run
+in some other terminal is invisible to the agent's shell.
+
+The tab is composed as one line. When `before` is set, bash first sources
+`~/.bash_profile` in that same shell, so a function or alias defined there
+(`aws-login`, for example) exists, and an `export` it makes is inherited by the
+agent. A non-login interactive bash does not read `.bash_profile` on its own.
+
+```sh
+cd '<worktree>' && . ~/.bash_profile && <before> && <agent command>
+```
+
+`&&`, not `;`, on purpose: if the setup command fails, the agent does not start and
+the tab stops at the prompt with the error still on screen. A half-prepared
+environment never gets an agent attached to it.
+
+A non-empty `before` bypasses the `wt` fast path for the same reason `auto` and
+`net: on` do: `wt create --iterm` accepts only `--yolo` and `--prompt`, so routing
+through it would silently drop the setup command.
+
+The field is single-line — `textinput` replaces newlines and tabs with spaces, so a
+multi-line paste is joined into one command rather than run as several. `before` is
+not remembered between launches; the modal opens with it empty.
+
+`before: aws-login bora` on its own does **not** give the agent working AWS access:
+the credentials land in the tab's shell, but the sandbox still blocks egress. For
+that combination you need `net: on` as well — and everything the warning above says
+about widening access then applies.
 
 ## What it watches
 
@@ -139,6 +188,33 @@ am help           subcommand list + env vars
 | `AM_MAX_CARDS` | `50` | upper bound on cards |
 | `AM_PROJECTS_DIR` | `~/.cursor/projects` | where transcripts live |
 | `AM_WT_BIN` | `~/.claude/skills/worktrees/scripts/wt` | path to the `wt` CLI |
+| `AM_DEFAULT_APPROVAL` | `on-request` | initial `asks:` value in the `n` modal: `on-request`, `auto`, `never`, `untrusted` |
+| `AM_DEFAULT_NET` | `on` | initial `net:` value: `off` or `on` (full access) |
+| `AM_DEFAULT_BEFORE` | unset | initial `before:` command, e.g. `aws-login bora` |
+
+The three `AM_DEFAULT_*` vars only decide where the `n` modal's cursor starts.
+They are still editable per launch, and the modal still shows the egress warning
+when `net:` resolves to `on` — a default is not a silent grant. `before` is
+re-applied every time the modal opens, so clearing it for one launch does not
+discard the configured default for the next.
+
+An unparseable `AM_DEFAULT_APPROVAL` or `AM_DEFAULT_NET` prints a warning to
+stderr and falls back to the default rather than refusing to start. Set them once
+in your shell profile if you always want the same starting point:
+
+```sh
+export AM_DEFAULT_NET=on
+export AM_DEFAULT_BEFORE='aws-login bora'
+export AM_DEFAULT_APPROVAL=on-request
+```
+
+With those set, `n` → `Enter` on a repo is enough; `net:` starts at `on (full
+access)` and `before:` already holds the login command.
+
+Remember that `net: on` disables the sandbox for the launched agent. If you only
+want the login command without granting egress, set `AM_DEFAULT_BEFORE` alone —
+but note that the login alone will not give the agent working AWS access, because
+the sandbox still blocks the API calls.
 
 ## Performance
 

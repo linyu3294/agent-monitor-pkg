@@ -415,8 +415,10 @@ Multi-agent
   i    open nvim + Diffview (worktree only)
 
 Worktree lifecycle
-  n    new worktree (repo / branch / base / agent / approval / prompt)
+  n    new worktree (repo / branch / base / agent / approval / net / before / prompt)
        approval: on-request (default) · auto · never · untrusted
+       net: on (full access, no sandbox, default) · off (workspace-write)
+       before: optional shell command run before the agent starts
   r    remove selected (y/N confirm)
   s    sync (rebase onto base)
 
@@ -451,6 +453,8 @@ func (m *model) viewNewWt() string {
 	b.WriteString("base:   " + m.form.base.View() + "\n")
 	b.WriteString("agent:  " + m.viewAgentField() + "\n")
 	b.WriteString("asks:   " + m.viewApprovalField() + "\n")
+	b.WriteString("net:    " + m.viewNetworkField() + "\n")
+	b.WriteString("before: " + m.form.before.View() + "\n")
 	b.WriteString("prompt: " + m.form.prompt.View() + "\n")
 	if m.form.err != "" {
 		b.WriteString("\n")
@@ -466,6 +470,16 @@ func (m *model) viewNewWt() string {
 	if m.form.approval == wtbridge.ApprovalAuto {
 		b.WriteString("\n")
 		b.WriteString(styleDim.Render("auto: the agent applies its own approval policy · on-request asks you every time"))
+	}
+	if m.form.network == wtbridge.NetworkOn {
+		b.WriteString("\n")
+		b.WriteString(styleConfirm.Render("net on: the sandbox is disabled — the agent reaches the network and the whole filesystem"))
+		b.WriteString("\n")
+		b.WriteString(styleDim.Render("any credential this shell already holds becomes reachable — an AWS session, an SSH agent, a token in your env"))
+	}
+	if strings.TrimSpace(m.form.before.Value()) != "" {
+		b.WriteString("\n")
+		b.WriteString(styleDim.Render("before runs in the new worktree first · if it fails, the agent does not start"))
 	}
 	return m.centerInModal(b.String())
 }
@@ -494,6 +508,24 @@ func (m *model) viewApprovalField() string {
 	if m.form.focused == 4 {
 		styled = styleSel.Render(value)
 		hint = "  " + styleDim.Render("←/→")
+	}
+	return styleDim.Render("‹") + " " + styled + " " + styleDim.Render("›") + hint
+}
+
+// viewNetworkField renders the egress selector. It is a separate row from
+// approval because the two are separate decisions, and it is a first-class
+// field for the same reason: whether an agent may reach the internet is the
+// human's call, not the dashboard's default.
+func (m *model) viewNetworkField() string {
+	value := m.form.network.String()
+	styled := styleValue.Render(value)
+	hint := ""
+	if m.form.focused == 5 {
+		styled = styleSel.Render(value)
+		hint = "  " + styleDim.Render("←/→")
+	}
+	if m.form.network == wtbridge.NetworkOn {
+		styled = styleConfirm.Render(value)
 	}
 	return styleDim.Render("‹") + " " + styled + " " + styleDim.Render("›") + hint
 }

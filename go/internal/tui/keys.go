@@ -408,6 +408,9 @@ func (m *model) openNewWt() (tea.Model, tea.Cmd) {
 	m.form.repo.SetValue(repo)
 	m.form.branch.SetValue("")
 	m.form.prompt.SetValue("")
+	// Re-applied on every open, so clearing the field for one launch does not
+	// silently discard the operator's configured default for the next one.
+	m.form.before.SetValue(m.opts.DefaultBefore)
 	// Prefill a base the repo actually has. The field used to be a fixed
 	// "origin/main", which is wrong for repos defaulting to master, for
 	// remotes not named origin, and for repos with no remote at all —
@@ -421,6 +424,7 @@ func (m *model) openNewWt() (tea.Model, tea.Cmd) {
 	m.form.branch.Blur()
 	m.form.base.Blur()
 	m.form.prompt.Blur()
+	m.form.before.Blur()
 	// Workspace folders like ~/Documents are not git repos. When we can
 	// still infer one, leave the cursor on branch so typing works the
 	// same as before. Otherwise focus repo so the missing path is obvious.
@@ -477,8 +481,10 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		branch := strings.TrimSpace(m.form.branch.Value())
 		base := strings.TrimSpace(m.form.base.Value())
 		prompt := m.form.prompt.Value()
+		before := strings.TrimSpace(m.form.before.Value())
 		agent := m.form.agent
 		approval := m.form.approval
+		network := m.form.network
 		if repo == "" {
 			m.form.err = "repo path is required — this workspace is not a git repo"
 			m.focusNewWt(0)
@@ -520,11 +526,19 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.runWtCmd(
 			fmt.Sprintf("created worktree %s with %s", branch, agent),
-			func() error { return m.wt.Create(top, branch, base, prompt, agent, approval) },
+			func() error {
+				return m.wt.CreateWithOptions(top, branch, base, wtbridge.LaunchOptions{
+					Agent:    agent,
+					Approval: approval,
+					Network:  network,
+					Before:   before,
+					Prompt:   prompt,
+				})
+			},
 		)
 	}
-	// The agent and approval fields are selectors, not text inputs:
-	// ←/→ (or h/l, space) cycle them instead of typing into them.
+	// The agent, approval and network fields are selectors, not text
+	// inputs: ←/→ (or h/l, space) cycle them instead of typing into them.
 	if m.form.focused == 3 {
 		switch key {
 		case "left", "h":
@@ -547,6 +561,17 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.form.focused == 5 {
+		switch key {
+		case "left", "h":
+			m.form.network = m.form.network.Next(-1)
+			m.form.err = ""
+		case "right", "l", " ":
+			m.form.network = m.form.network.Next(1)
+			m.form.err = ""
+		}
+		return m, nil
+	}
 	// Pass to the focused field.
 	m.form.err = ""
 	var cmd tea.Cmd
@@ -557,7 +582,9 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.form.branch, cmd = m.form.branch.Update(msg)
 	case 2:
 		m.form.base, cmd = m.form.base.Update(msg)
-	case 5:
+	case 6:
+		m.form.before, cmd = m.form.before.Update(msg)
+	case 7:
 		m.form.prompt, cmd = m.form.prompt.Update(msg)
 	}
 	return m, cmd
@@ -569,6 +596,7 @@ func (m *model) focusNewWt(idx int) {
 	m.form.branch.Blur()
 	m.form.base.Blur()
 	m.form.prompt.Blur()
+	m.form.before.Blur()
 	switch idx {
 	case 0:
 		m.form.repo.Focus()
@@ -576,14 +604,16 @@ func (m *model) focusNewWt(idx int) {
 		m.form.branch.Focus()
 	case 2:
 		m.form.base.Focus()
-	case 5:
+	case 6:
+		m.form.before.Focus()
+	case 7:
 		m.form.prompt.Focus()
 	}
 }
 
 // newWtFields is the number of focusable fields in the modal:
-// repo, branch, base, agent, approval, prompt.
-const newWtFields = 6
+// repo, branch, base, agent, approval, network, before, prompt.
+const newWtFields = 8
 
 func (m *model) cycleNewWtFocus(delta int) {
 	m.focusNewWt((m.form.focused + delta + newWtFields) % newWtFields)
