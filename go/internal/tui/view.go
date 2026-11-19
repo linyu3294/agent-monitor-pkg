@@ -277,8 +277,9 @@ func (m *model) renderCard(s session.Session, selected bool) string {
 
 	stateText := stl.Render(string(state))
 	agent := ""
-	if s.Source == session.SourceCodewhale {
-		agent = "  ·  " + styleAgent.Render("codewhale")
+	switch s.Source {
+	case session.SourceCodewhale, session.SourceClaude:
+		agent = "  ·  " + styleAgent.Render(s.AgentLabel())
 	}
 	title := fmt.Sprintf(" %s%s  ·  %s ", styleValueBold.Render(s.Project), agent, stateText)
 	rightLabel := fmt.Sprintf(" %s ", styleDim.Render(ago))
@@ -416,6 +417,7 @@ Multi-agent
 
 Worktree lifecycle
   n    new worktree (repo / branch / base / agent / approval / net / before / prompt)
+       agent: cursor-agent · claude · codewhale
        approval: on-request (default) · auto · never · untrusted
        net: on (full access, no sandbox, default) · off (workspace-write)
        before: optional shell command run before the agent starts
@@ -463,17 +465,30 @@ func (m *model) viewNewWt() string {
 	}
 	b.WriteString("\n")
 	b.WriteString(styleDim.Render("repo is the git checkout · base is detected from the repo · agent is the CLI launched in the new tab"))
-	if m.form.agent == wtbridge.AgentCodewhale {
+	switch {
+	case m.form.agent == wtbridge.AgentCodewhale:
 		b.WriteString("\n")
 		b.WriteString(styleDim.Render("codewhale: Shift+Tab in the session cycles Ask → Auto-Review → Full Access. asks is not pinned — that flag locks the dial"))
-	} else if m.form.approval == wtbridge.ApprovalNever {
+	case m.form.agent == wtbridge.AgentClaude:
+		b.WriteString("\n")
+		b.WriteString(styleDim.Render("claude: asks → --permission-mode acceptEdits (auto) / --dangerously-skip-permissions (never)"))
+		b.WriteString("\n")
+		b.WriteString(styleDim.Render("claude always runs unsandboxed — the net row does not change its command"))
+		if m.form.approval == wtbridge.ApprovalNever {
+			b.WriteString("\n")
+			b.WriteString(styleConfirm.Render("unattended: the new agent will not stop to ask you before it acts"))
+		} else if m.form.approval == wtbridge.ApprovalAuto {
+			b.WriteString("\n")
+			b.WriteString(styleDim.Render("auto: file edits run without asking · every other tool and command still prompts"))
+		}
+	case m.form.approval == wtbridge.ApprovalNever:
 		b.WriteString("\n")
 		b.WriteString(styleConfirm.Render("unattended: the new agent will not stop to ask you before it acts"))
-	} else if m.form.approval == wtbridge.ApprovalAuto {
+	case m.form.approval == wtbridge.ApprovalAuto:
 		b.WriteString("\n")
 		b.WriteString(styleDim.Render("auto: the agent applies its own approval policy · on-request asks you every time"))
 	}
-	if m.form.network == wtbridge.NetworkOn {
+	if m.form.network == wtbridge.NetworkOn && m.form.agent != wtbridge.AgentClaude {
 		b.WriteString("\n")
 		b.WriteString(styleConfirm.Render("net on: the sandbox is disabled — the agent reaches the network and the whole filesystem"))
 		b.WriteString("\n")

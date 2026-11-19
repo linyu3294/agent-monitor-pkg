@@ -28,8 +28,9 @@ const NoSessionID = "(no session)"
 
 // Options controls a Scanner instance.
 type Options struct {
-	ProjectsDir   string        // default: $HOME/.cursor/projects
-	CodewhaleDir  string        // default: $HOME/.codewhale/sessions (empty disables)
+	ProjectsDir   string        // default: $AM_PROJECTS_DIR or $HOME/.cursor/projects
+	CodewhaleDir  string        // default: $AM_CODEWHALE_DIR or $HOME/.codewhale/sessions
+	ClaudeDir     string        // default: $AM_CLAUDE_DIR or $HOME/.claude/projects
 	IdleThreshold time.Duration // skip transcripts mtime older than now-IdleThreshold
 	MaxCards      int           // hard upper bound on returned sessions
 	TailBytes     int64         // bytes to read from the tail of each transcript (default 8192)
@@ -68,17 +69,65 @@ type cacheEntry struct {
 	cwdHint string
 }
 
+// agedOutWorktreeIsLive reports whether a log that fell below the idle
+// cutoff belongs to a worktree that still exists on disk. The workspace
+// is cached per (path, mtime) so the head read happens once per file
+// version rather than on every quiescent tick.
+//
+// The parser is supplied by the caller: Codewhale and Claude Code store
+// the workspace differently, but the immortality rule is the same.
+func (s *Scanner) agedOutWorktreeIsLive(path string, mtime int64, parse func(string) string) bool {
+	entry, ok := s.whCwd[path]
+	if !ok || entry.mtime != mtime {
+		entry = whCwdEntry{mtime: mtime, cwd: parse(path)}
+		s.whCwd[path] = entry
+	}
+	enc := encodeCodewhaleCWD(entry.cwd)
+	if enc == "" || worktreeSlugFor(enc) == "" {
+		return false
+	}
+	return !isOrphanedWorktree(enc)
+}
+
+// gcWhCwd drops cached workspaces for paths under root that this scan did
+// not see, so a long-lived dashboard doesn't hold a growing map of dead
+// paths. Scoped by root because several stores share the map.
+func (s *Scanner) gcWhCwd(root string, touched map[string]struct{}) {
+	if root == "" {
+		return
+	}
+	prefix := root + string(filepath.Separator)
+	for p := range s.whCwd {
+		if _, ok := touched[p]; ok {
+			continue
+		}
+		if strings.HasPrefix(p, prefix) {
+			delete(s.whCwd, p)
+		}
+	}
+}
+
 // New returns a Scanner with sensible defaults filled in.
 func New(opts Options) *Scanner {
 	if opts.ProjectsDir == "" {
-		home, _ := os.UserHomeDir()
-		opts.ProjectsDir = filepath.Join(home, ".cursor", "projects")
+		if dir := os.Getenv("AM_PROJECTS_DIR"); dir != "" {
+			opts.ProjectsDir = dir
+		} else if home, err := os.UserHomeDir(); err == nil && home != "" {
+			opts.ProjectsDir = filepath.Join(home, ".cursor", "projects")
+		}
 	}
 	if opts.CodewhaleDir == "" {
 		if dir := os.Getenv("AM_CODEWHALE_DIR"); dir != "" {
 			opts.CodewhaleDir = dir
 		} else if home, err := os.UserHomeDir(); err == nil && home != "" {
 			opts.CodewhaleDir = filepath.Join(home, ".codewhale", "sessions")
+		}
+	}
+	if opts.ClaudeDir == "" {
+		if dir := os.Getenv("AM_CLAUDE_DIR"); dir != "" {
+			opts.ClaudeDir = dir
+		} else if home, err := os.UserHomeDir(); err == nil && home != "" {
+			opts.ClaudeDir = filepath.Join(home, ".claude", "projects")
 		}
 	}
 	if opts.IdleThreshold == 0 {
@@ -168,9 +217,11 @@ func (s *Scanner) Scan() []session.Session {
 		}
 	}
 
-	// Codewhale keeps its own store; merge its live sessions into the
-	// same candidate list so the dashboard shows one card per agent.
+	// Codewhale and Claude Code keep their own stores; merge their live
+	// sessions into the same candidate list so the dashboard shows one
+	// card per agent.
 	cands = append(cands, s.codewhaleCandidates(cutoff)...)
+	cands = append(cands, s.claudeCandidates(cutoff)...)
 
 	sortCandidatesNewestFirst(cands)
 	if len(cands) > s.opts.MaxCards {
@@ -179,8 +230,12 @@ func (s *Scanner) Scan() []session.Session {
 
 	out := make([]session.Session, 0, len(cands))
 	for _, c := range cands {
-		if c.source == session.SourceCodewhale {
+		switch c.source {
+		case session.SourceCodewhale:
 			out = append(out, s.codewhaleSession(c))
+			continue
+		case session.SourceClaude:
+			out = append(out, s.claudeSession(c))
 			continue
 		}
 		sess := session.Session{

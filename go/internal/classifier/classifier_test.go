@@ -96,6 +96,27 @@ func TestClassify(t *testing.T) {
 			view: dead,
 			want: session.StateIdle,
 		},
+		// Claude Code writes the tool call before the tool runs and the
+		// result when it finishes, so the same rule applies: a live
+		// process with a tool-call tail is waiting on that tool.
+		{
+			name: "stale claude with a live pid and a tool in flight is active",
+			sess: session.Session{ID: "a", Source: session.SourceClaude, Mtime: now - 600, LastRole: session.RoleAssistant, LastTool: "Bash"},
+			view: live,
+			want: session.StateActive,
+		},
+		{
+			name: "stale claude whose turn ended is idle",
+			sess: session.Session{ID: "a", Source: session.SourceClaude, Mtime: now - 600, LastRole: session.RoleAssistant, LastText: "done"},
+			view: live,
+			want: session.StateIdle,
+		},
+		{
+			name: "stale claude with no live pid is idle",
+			sess: session.Session{ID: "a", Source: session.SourceClaude, Mtime: now - 600, LastRole: session.RoleAssistant, LastTool: "Bash"},
+			view: dead,
+			want: session.StateIdle,
+		},
 		// Cursor keeps the clock rule: its pids idle without recording.
 		{
 			name: "stale cursor stays idle despite a live pid",

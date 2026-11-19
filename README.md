@@ -9,7 +9,7 @@
 
 # agent-monitor
 
-Live dashboard for every Cursor agent session running on your machine. Single-pane TUI plus a tmux-hosted worktree-manager pane — see every agent at once, follow one live, take over a chat in a fresh iTerm tab, spin up new worktrees, all in one keystroke.
+Live dashboard for every Cursor, Claude Code, and Codewhale agent session running on your machine. Single-pane TUI plus a tmux-hosted worktree-manager pane — see every agent at once, follow one live, take over a chat in a fresh iTerm tab, spin up new worktrees, all in one keystroke.
 
 **One Go binary, ~30 ms refresh ticks, fully read-only on agent runtime.** Works on macOS (Apple Silicon and Intel).
 
@@ -34,7 +34,7 @@ am help     # subcommand list
 
 The installer:
 
-1. Verifies `tmux`, `ps`, `lsof` are present (warns on missing iTerm2 / `cursor-agent` / `wt`).
+1. Verifies `tmux`, `ps`, `lsof` are present (warns on missing iTerm2 / `cursor-agent` / `claude` / `wt`).
 2. Detects your arch (`darwin/arm64` vs `darwin/amd64`).
 3. Builds the Go binary if `go` is on `$PATH`; otherwise downloads the matching prebuilt binary from the latest GitHub release.
 4. Symlinks `am` into `~/.local/bin/`. **Never edits your shell rc** — if `~/.local/bin` isn't on your `$PATH` you get a one-line copy-pasteable export.
@@ -65,18 +65,26 @@ Re-run `install.sh` any time — it's idempotent.
 | `F2` / `F3`, `M-Tab` | switch panes (session-scoped, never leaks to other tmux sessions) |
 
 `n` opens a new worktree and launches the chosen CLI in the tab. When `codewhale`
-is on `PATH` the agent field defaults to it, so the common case needs no extra
-keystroke; `←` / `→` switch to `cursor-agent`.
+is on `PATH` the agent field defaults to it (then Claude Code, then
+`cursor-agent`), so the common case needs no extra keystroke; `←` / `→` cycle
+`cursor-agent` → `claude` → `codewhale`.
 
-The `asks:` field is the approval posture for **cursor-agent**, and **it is
-yours to choose** — the dashboard never switches it for you. It defaults to
-`on-request`, so a new cursor-agent stops and asks before it acts. `←` / `→`
+Selecting `claude` starts Claude Code in the new tab with your prompt
+(`claude -- '…'`). It authenticates the way that CLI always does: an
+`ANTHROPIC_API_KEY` exported by the tab's shell, or its own stored login. New
+tabs start as login shells, so a key exported in `~/.bash_profile` is read by it;
+if your shell does not read that file, export the key where it does, or pass it in
+the `before:` command.
+
+The `asks:` field is the approval posture for **cursor-agent and Claude Code**,
+and **it is yours to choose** — the dashboard never switches it for you. It
+defaults to `on-request`, so a new agent stops and asks before it acts. `←` / `→`
 cycles:
 
 - `on-request` — ask before acting (default)
-- `auto` — Smart Auto (`--auto-review`): safe calls run, the rest ask
-- `never (unattended)` — run without stopping at all (`--yolo`), for a worktree you open and walk away from. The modal warns when you select it.
-- `untrusted (strict)` — cursor-agent has no stricter flag, so this is the default
+- `auto` — cursor-agent Smart Auto (`--auto-review`) or Claude Code `--permission-mode acceptEdits`: routine edits run, the rest ask
+- `never (unattended)` — run without stopping at all (`--yolo` for cursor-agent, `--dangerously-skip-permissions` for Claude Code), for a worktree you open and walk away from. The modal warns when you select it.
+- `untrusted (strict)` — neither CLI has a stricter flag, so this is the default
 
 Codewhale does not take this row. Its permission dial is inside the session:
 **Shift+Tab** cycles Ask → Auto-Review → Full Access, which is how you leave
@@ -84,14 +92,14 @@ the Auto-Review guardian. Passing `--approval-policy` makes that flag the
 controlling source, and Shift+Tab then does nothing. The session starts on
 the posture saved in `~/.codewhale/settings.toml`.
 
-| Posture | codewhale | cursor-agent |
-|---|---|---|
-| `on-request` | not pinned; Shift+Tab in the session | default |
-| `auto` | not pinned; Shift+Tab in the session | `--auto-review` (Smart Auto) |
-| `never` | not pinned; Shift+Tab in the session | `--yolo` |
-| `untrusted` | not pinned; Shift+Tab in the session | default (no stricter flag exists) |
+| Posture | codewhale | cursor-agent | Claude Code |
+|---|---|---|---|
+| `on-request` | not pinned; Shift+Tab in the session | default | default |
+| `auto` | not pinned; Shift+Tab in the session | `--auto-review` (Smart Auto) | `--permission-mode acceptEdits` |
+| `never` | not pinned; Shift+Tab in the session | `--yolo` | `--dangerously-skip-permissions` |
+| `untrusted` | not pinned; Shift+Tab in the session | default (no stricter flag exists) | default (no stricter flag exists) |
 
-Codewhale is always started with the sandbox off (`--sandbox-mode danger-full-access`), so its shell is the system shell, the same way `cursor-agent --sandbox disabled` is. When `wt` is installed, `auto` deliberately bypasses `wt create --iterm` — wt can only express `--yolo`, so routing auto through it would silently launch a different posture.
+Codewhale is always started with the sandbox off (`--sandbox-mode danger-full-access`), so its shell is the system shell, the same way `cursor-agent --sandbox disabled` is. When `wt` is installed, `auto` deliberately bypasses `wt create --iterm` — wt can only express `--yolo`, so routing auto through it would silently launch a different posture. Claude Code has no sandbox switch at all: every launch already has the whole filesystem and the network.
 
 ## Network posture
 
@@ -99,12 +107,12 @@ Codewhale is always started with the sandbox off (`--sandbox-mode danger-full-ac
 internet?" are different questions, and answering one should not grant the other.
 The dashboard starts it at `on`. Set `AM_DEFAULT_NET=off` to leave cursor-agent on its configured default. It stays a per-launch choice, like `never (unattended)`.
 
-Codewhale has no separate network switch. Its only unsandboxed mode is `danger-full-access`, so every codewhale launch uses that, whichever way `net:` is set. `net:` changes cursor-agent only:
+Codewhale has no separate network switch. Its only unsandboxed mode is `danger-full-access`, so every codewhale launch uses that, whichever way `net:` is set. Claude Code has no sandbox switch either, so `net:` does not change its command line. `net:` changes cursor-agent only:
 
-| `net:` | codewhale | cursor-agent |
-|---|---|---|
-| `off (workspace-write)` | `--sandbox-mode danger-full-access` | no flag (its configured default) |
-| `on (full access)` | `--sandbox-mode danger-full-access` | `--sandbox disabled` |
+| `net:` | codewhale | cursor-agent | Claude Code |
+|---|---|---|---|
+| `off (workspace-write)` | `--sandbox-mode danger-full-access` | no flag (its configured default) | no flag (always unsandboxed) |
+| `on (full access)` | `--sandbox-mode danger-full-access` | `--sandbox disabled` | no flag (always unsandboxed) |
 
 `danger-full-access` and `--sandbox disabled` both turn the sandbox off, so the agent gets the system shell and the whole filesystem. Any credential that shell already holds — an AWS session from `aws-login`, an SSH agent, a token in the environment — is reachable by the agent.
 
@@ -149,21 +157,26 @@ about widening access then applies.
 
 **Cursor.** Transcripts are JSONL under `~/.cursor/projects/<encoded>/agent-transcripts/<chatId>/<chatId>.jsonl`.
 
-**Codewhale.** Session logs are JSONL under `~/.codewhale/sessions/<uuid>.json` (override the
-directory with `AM_CODEWHALE_DIR`). Each tick the dashboard:
+**Codewhale.** Session logs are JSONL under `~/.codewhale/sessions/<uuid>.json` (override the directory with `AM_CODEWHALE_DIR`).
 
-1. Walks both stores (one syscall pass each).
-2. Reads a bounded head + tail of each log whose mtime advanced (mtime cache; Cursor: 8 KB tail, Codewhale: 512 KB head for the workspace and 64 KB tail for the last turn).
-3. Runs one `ps` and one bulk `lsof` to map sessions to live processes: Cursor through its open `store.db`, Codewhale through its open session log.
+**Claude Code.** Transcripts are JSONL under `~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl` (override the directory with `AM_CLAUDE_DIR`).
+
+Each tick the dashboard:
+
+1. Walks all three stores (one syscall pass each).
+2. Reads a bounded head + tail of each log whose mtime advanced (mtime cache; Cursor: 8 KB tail, Codewhale: 512 KB head for the workspace and 64 KB tail for the last turn, Claude Code: 64 KB head for the workspace and a backwards-growing tail for the last turn).
+3. Runs one `ps` and one bulk `lsof` to map sessions to live processes: Cursor through its open `store.db`, Codewhale through its open session log, Claude Code through the process's working directory — it holds no session file open.
 4. Classifies each card by **content** (last JSONL entry shape), not just by clock.
 
-The workspace for a Codewhale card is read from the log's own metadata when it states one, and otherwise inferred from any absolute path in the log that exists on disk — preferring a git checkout. A card whose workspace can't be established shows `(unknown workspace)` rather than a guess.
+The workspace for a Codewhale card is read from the log's own metadata when it states one, and otherwise inferred from any absolute path in the log that exists on disk — preferring a git checkout. A card whose workspace can't be established shows `(unknown workspace)` rather than a guess. A Claude card's workspace is the `cwd` every transcript record states, so it follows the directory the CLI was actually launched in, and its sidechain (subagent) records are skipped so the card reports the thread you are watching.
+
+Claude Code keeps no file descriptor tied to a session, so liveness is bound by workspace: a `claude` process whose working directory matches the session's workspace is that session. If a process does hold its own transcript open, that file names the session exactly and wins over the workspace guess. Otherwise the join only accepts a transcript written at or after the process started, and refuses when more than one qualifies — two live agents in one directory, or a finished batch session alongside the live one. An unbound card loses its `ACTIVE` state; `x` and `r` can never signal a process the card does not name.
 
 This is a fully read-only view of the agent runtime — the dashboard never opens a log in full, never touches an agent's sockets, and never blocks on I/O. Agents detach from their parent terminal, so closing the terminal that started one doesn't kill it; `am` just gives you visibility back from any new terminal.
 
-A card's `cmd:` row names the CLI that resumes it (`cursor-agent --resume <id>` or `codewhale resume <id>`), and `am list` reports that `SOURCE` per row. `f` (follow) is Cursor-only; on a Codewhale card it points you at `a` instead of tailing the wrong file.
+A card's `cmd:` row names the CLI that resumes it (`cursor-agent --resume <id>`, `claude --resume <id>`, or `codewhale resume <id>`), and `am list` reports that `SOURCE` per row. `f` (follow) works for Cursor and Claude Code transcripts; on a Codewhale card it points you at `a` instead of tailing the wrong file.
 
-**Removal never deletes context.** `r` signals the agent and, for a worktree card, deletes the worktree directory and its branch — including any uncommitted work in it. The conversation itself is untouched for both agent types: Cursor's transcript stays under `~/.cursor/projects/...` and Codewhale's log under `~/.codewhale/sessions/`, so `<cli> resume <id>` still replays the full history. The one thing removal destroys is the workspace, so resuming into a deleted worktree fails even though the transcript is intact.
+**Removal never deletes context.** `r` signals the agent and, for a worktree card, deletes the worktree directory and its branch — including any uncommitted work in it. The conversation itself is untouched for every agent type: Cursor's transcript stays under `~/.cursor/projects/...`, Claude Code's under `~/.claude/projects/...`, and Codewhale's log under `~/.codewhale/sessions/`, so `<cli> resume <id>` still replays the full history. The one thing removal destroys is the workspace, so resuming into a deleted worktree fails even though the transcript is intact.
 
 Once a worktree is gone its card stays gone — not just until the next restart. A card whose worktree no longer exists has nothing to act on, and tombstone hiding lives only in memory. The exception is an agent still running in a deleted worktree: it keeps its card so you can kill it.
 
@@ -174,8 +187,8 @@ am                start or attach the dashboard
 am attach         attach an existing session (error if none)
 am detach         detach current tmux client
 am list           plain-text dump (machine-readable, one SOURCE column per agent)
-am follow <id>    open dashboard with bottom pane live-tailing one transcript
-am resume <id>    open dashboard with bottom pane running cursor-agent --resume <id>
+am follow <id>    open dashboard with bottom pane live-tailing one transcript (Cursor / Claude Code)
+am resume <id>    open dashboard with bottom pane resuming that session (agent auto-detected)
 am kill           kill the agent-monitor tmux session (monitored agents unaffected)
 am rebuild        rebuild the Go binary (requires go on PATH)
 am restart        bounce the dashboard pane (leave wt-manager untouched)
@@ -191,7 +204,9 @@ am help           subcommand list + env vars
 | `AM_REFRESH_MS` | `2000` | dashboard tick interval |
 | `AM_IDLE_THRESHOLD_MIN` | `20` | hide sessions idle longer than this |
 | `AM_MAX_CARDS` | `50` | upper bound on cards |
-| `AM_PROJECTS_DIR` | `~/.cursor/projects` | where transcripts live |
+| `AM_PROJECTS_DIR` | `~/.cursor/projects` | Cursor transcript store |
+| `AM_CLAUDE_DIR` | `~/.claude/projects` | Claude Code transcript store |
+| `AM_CODEWHALE_DIR` | `~/.codewhale/sessions` | Codewhale session store |
 | `AM_WT_BIN` | `~/.claude/skills/worktrees/scripts/wt` | path to the `wt` CLI |
 | `AM_DEFAULT_APPROVAL` | `on-request` | initial `asks:` value in the `n` modal: `on-request`, `auto`, `never`, `untrusted` |
 | `AM_DEFAULT_NET` | `on` | initial `net:` value: `off` or `on` (full access) |
@@ -246,7 +261,7 @@ the sandbox still blocks the API calls.
 ~/.claude/skills/agent-monitor-pkg/uninstall.sh
 ```
 
-Kills the tmux session, removes the `~/.local/bin/am` symlink, and (with confirmation) deletes the install dir. Monitored `cursor-agent` processes and transcripts are never touched.
+Kills the tmux session, removes the `~/.local/bin/am` symlink, and (with confirmation) deletes the install dir. Monitored `cursor-agent`, `claude`, and `codewhale` processes and their transcripts are never touched.
 
 ## License
 

@@ -33,6 +33,22 @@ follow_session() {
             | .[]
           elif .role == "user" then
             $now + "  \u001b[35muser\u001b[0m  " + ((.message.content // "") | tostring | oneline | trunc(160))
+          elif .type == "assistant" and (.isSidechain | not) then
+            # Claude Code: role lives in message.role and the record type
+            # at the top level. Subagent (sidechain) turns are skipped so
+            # the tail shows the thread the user is actually watching.
+            (.message.content // [])
+            | map(
+                if .type == "tool_use" then
+                  "\u001b[33mtool\u001b[0m  " + .name + "  " + ((.input // {}) | tostring | oneline | trunc(100))
+                elif .type == "text" then
+                  "\u001b[37mtext\u001b[0m  " + (.text | oneline | trunc(160))
+                else empty end
+              )
+            | map($now + "  " + .)
+            | .[]
+          elif .type == "user" and ((.message.content | type) == "string") then
+            $now + "  \u001b[35muser\u001b[0m  " + (.message.content | oneline | trunc(160))
           else empty end
         ' <<<"$line" 2>/dev/null
       done

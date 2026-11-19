@@ -128,6 +128,11 @@ func (m *model) handleResume() (tea.Model, tea.Cmd) {
 	if s == nil {
 		return m, nil
 	}
+	if s.ID == scanner.NoSessionID {
+		// A stub card stands for a worktree whose agent has not written a
+		// transcript yet; there is no id any CLI could resume.
+		return m, m.flashConfirm("no session on this worktree yet", "wait for the agent to write its first turn")
+	}
 	if m.proc.IsLive(s.ID) {
 		return m, m.flashConfirm(
 			fmt.Sprintf("session %s is already live in another terminal", short(s.ID)),
@@ -145,6 +150,14 @@ func (m *model) handleResume() (tea.Model, tea.Cmd) {
 		return m, m.runWtCmd(
 			fmt.Sprintf("resumed %s in new iTerm tab", short(id)),
 			func() error { return wtbridge.OpenITerm(cwd, "codewhale resume "+id) },
+		)
+	}
+	if s.Source == session.SourceClaude {
+		// Same reasoning: Claude Code resumes by session id, in the
+		// workspace the card points at.
+		return m, m.runWtCmd(
+			fmt.Sprintf("resumed %s in new iTerm tab", short(id)),
+			func() error { return wtbridge.OpenITerm(cwd, "claude --resume "+id) },
 		)
 	}
 	return m, m.runWtCmd(
@@ -518,9 +531,10 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.form.err = ""
 		m.state = stateList
-		// Codewhale sessions have no Cursor transcript, so the worktree
-		// can only surface as a stub card. Un-hide stubs so the agent the
-		// user just launched is actually visible in the list.
+		// Codewhale and Claude Code sessions have no Cursor transcript, so
+		// the worktree can only surface as a stub card until their own
+		// store has a session. Un-hide stubs so the agent the user just
+		// launched is actually visible in the list.
 		if agent != wtbridge.AgentCursor {
 			m.showEmpty = true
 		}

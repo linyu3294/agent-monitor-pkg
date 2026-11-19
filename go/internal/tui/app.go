@@ -187,12 +187,15 @@ func New(opts Options, version string) *model {
 	}
 }
 
-// defaultAgent prefers codewhale when it is installed, so the `n` modal
-// launches the lowest-friction agent without an extra keystroke. Cursor
-// stays the fallback on machines that only have cursor-agent.
+// defaultAgent prefers codewhale when it is installed, then Claude Code,
+// so the `n` modal launches the lowest-friction agent without an extra
+// keystroke. Cursor stays the fallback on machines that have neither.
 func defaultAgent() wtbridge.Agent {
 	if wtbridge.AgentCodewhale.Available() {
 		return wtbridge.AgentCodewhale
+	}
+	if wtbridge.AgentClaude.Available() {
+		return wtbridge.AgentClaude
 	}
 	return wtbridge.AgentCursor
 }
@@ -215,7 +218,8 @@ func (m *model) scheduleTick() tea.Cmd {
 //     Cursor encodes the worktree path into the project dir, so two transcripts
 //     for the same worktree share the same ProjectDir; we keep only the
 //     most-recent one (scanner returns sessions sorted newest first, so the
-//     first one wins).
+//     first one wins). A real session always beats a `(no session)` stub for
+//     the same worktree: the stub has no id to resume.
 //   - Primary-checkout sessions surface as individual cards — the user can
 //     run multiple agents against the main checkout and remove them
 //     independently with `r`.
@@ -230,10 +234,15 @@ func (m *model) refreshCmd() tea.Cmd {
 	return func() tea.Msg {
 		m.proc.Refresh()
 		raw := m.scanner.Scan()
+		// Claude Code holds no session file descriptor, so its processes
+		// bind to a card through the workspace they run in. That join
+		// needs the scan's workspace → session mapping, which is why it
+		// happens here and not inside Refresh.
+		m.proc.BindClaudeSessions(proctable.ClaudeWorkspaceIndex(raw))
 		var wtmID string
 		hiddenEmpty := 0
 		filtered := raw[:0]
-		seenWorktree := map[string]bool{}
+		seenWorktree := map[string]int{}
 		for _, s := range raw {
 			if _, ok := tombstones[tombstoneKey(s)]; ok {
 				continue
@@ -253,15 +262,22 @@ func (m *model) refreshCmd() tea.Cmd {
 			if OrphanedWorktree(s, m.proc.IsLive(s.ID)) {
 				continue
 			}
-			if s.WorktreeSlug != "" {
-				if seenWorktree[s.ProjectDir] {
-					continue
-				}
-				seenWorktree[s.ProjectDir] = true
-			}
 			s.State = classifier.Classify(s, m.proc)
 			s.PID = m.proc.PID(s.ID)
 			s.Paused = m.proc.IsPaused(s.ID)
+			if s.WorktreeSlug != "" {
+				if idx, ok := seenWorktree[s.ProjectDir]; ok {
+					// A worktree's directory mtime can overtake its
+					// transcript's, which would leave the stub card in
+					// front of a real session. Replace it in place: the
+					// card must be the one that can be resumed.
+					if filtered[idx].ID == scanner.NoSessionID && s.ID != scanner.NoSessionID {
+						filtered[idx] = s
+					}
+					continue
+				}
+				seenWorktree[s.ProjectDir] = len(filtered)
+			}
 			filtered = append(filtered, s)
 		}
 		return scanResultMsg{sessions: filtered, wtManagerID: wtmID, hiddenEmpty: hiddenEmpty}

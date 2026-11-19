@@ -171,6 +171,7 @@ func runList(idleMin, maxCards int) {
 	tbl := proctable.New()
 	tbl.Refresh()
 	sessions := scn.Scan()
+	tbl.BindClaudeSessions(proctable.ClaudeWorkspaceIndex(sessions))
 	fmt.Printf("%-36s  %-10s  %-7s  %-9s  %-30s  %s\n", "CHAT-ID", "SOURCE", "PID", "STATE", "PROJECT", "WORKTREE")
 	fmt.Println("------------------------------------------------------------------------------------------------------------------------")
 	for _, s := range sessions {
@@ -201,6 +202,7 @@ func runSelfTest(idleMin, maxCards int) {
 	t0 := time.Now()
 	tbl.Refresh()
 	sessions := scn.Scan()
+	tbl.BindClaudeSessions(proctable.ClaudeWorkspaceIndex(sessions))
 	dur := time.Since(t0)
 	live, paused, wt := 0, 0, 0
 	for _, s := range sessions {

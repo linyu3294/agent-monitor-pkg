@@ -56,32 +56,40 @@ func (b *Bridge) Resume(id, cwd string) error {
 }
 
 // Agent identifies which CLI the `n` modal launches inside a fresh
-// worktree. Cursor preserves the historical behavior; Codewhale opens an
-// interactive Codewhale session in the same tab.
+// worktree. Cursor preserves the historical behavior; Claude Code and
+// Codewhale open an interactive session of their own in the same tab.
 type Agent int
 
 const (
 	// AgentCursor launches `cursor-agent`.
 	AgentCursor Agent = iota
+	// AgentClaude launches `claude` (Claude Code).
+	AgentClaude
 	// AgentCodewhale launches `codewhale`, confined to the new worktree.
 	AgentCodewhale
 )
 
 // agents is the launcher order shown in the `n` modal.
-var agents = []Agent{AgentCursor, AgentCodewhale}
+var agents = []Agent{AgentCursor, AgentClaude, AgentCodewhale}
 
 // String is the label rendered in the modal and in status toasts.
 func (a Agent) String() string {
-	if a == AgentCodewhale {
+	switch a {
+	case AgentCodewhale:
 		return "codewhale"
+	case AgentClaude:
+		return "claude"
 	}
 	return "cursor-agent"
 }
 
 // Bin is the executable this agent launches.
 func (a Agent) Bin() string {
-	if a == AgentCodewhale {
+	switch a {
+	case AgentCodewhale:
 		return "codewhale"
+	case AgentClaude:
+		return "claude"
 	}
 	return "cursor-agent"
 }
@@ -303,6 +311,19 @@ func (a Agent) LaunchCommand(prompt string, approval Approval) string {
 //	never       cursor-agent --yolo
 //	untrusted   cursor-agent (default)
 //
+// Claude Code takes the posture as a flag too. --permission-mode
+// acceptEdits is its middle ground (file edits run, everything else
+// still prompts) and --dangerously-skip-permissions is the unattended
+// launch. It has no stricter-than-default mode, so untrusted is the
+// default. Claude Code has no sandbox switch at all: every launch has the
+// whole filesystem and the network, so the `net:` row deliberately does
+// not appear in its command line.
+//
+//	on-request  claude (default)
+//	auto        claude --permission-mode acceptEdits
+//	never       claude --dangerously-skip-permissions
+//	untrusted   claude (default)
+//
 // cursor-agent takes --sandbox enabled|disabled. When the posture is off,
 // cursor-agent gets no flag at all — its effective default is whatever its
 // config says, and adding `--sandbox enabled` would change behaviour for
@@ -313,6 +334,14 @@ func (a Agent) LaunchCommandWith(prompt string, approval Approval, network Netwo
 	switch a {
 	case AgentCodewhale:
 		cmd = "codewhale --sandbox-mode danger-full-access --skip-onboarding --fresh"
+	case AgentClaude:
+		cmd = "claude"
+		switch approval {
+		case ApprovalAuto:
+			cmd += " --permission-mode acceptEdits"
+		case ApprovalNever:
+			cmd += " --dangerously-skip-permissions"
+		}
 	default:
 		switch approval {
 		case ApprovalAuto:

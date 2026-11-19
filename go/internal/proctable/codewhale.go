@@ -58,14 +58,7 @@ func defaultCodewhaleDir() string {
 // process that merely mentions the word (a grep, an editor buffer, a
 // shell command).
 func looksLikeCodewhale(cmd []byte) bool {
-	first := cmd
-	if i := bytes.IndexByte(first, ' '); i >= 0 {
-		first = first[:i]
-	}
-	if i := bytes.LastIndexByte(first, '/'); i >= 0 {
-		first = first[i+1:]
-	}
-	return bytes.Equal(first, []byte("codewhale"))
+	return bytes.Equal(baseName(argv0(cmd)), []byte("codewhale"))
 }
 
 // codewhaleIDFromOpenPath extracts the session id from an open file that

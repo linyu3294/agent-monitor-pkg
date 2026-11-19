@@ -118,6 +118,26 @@ func TestLaunchCommand(t *testing.T) {
 			"codewhale prompt", AgentCodewhale, ApprovalNever, "it's broken",
 			`codewhale --sandbox-mode danger-full-access --skip-onboarding --fresh -- 'it'\''s broken'`,
 		},
+		{
+			"claude asks by default", AgentClaude, ApprovalOnRequest, "",
+			"claude",
+		},
+		{
+			"claude auto accepts edits", AgentClaude, ApprovalAuto, "",
+			"claude --permission-mode acceptEdits",
+		},
+		{
+			"claude never skips permissions", AgentClaude, ApprovalNever, "",
+			"claude --dangerously-skip-permissions",
+		},
+		{
+			"claude untrusted is its default", AgentClaude, ApprovalUntrusted, "",
+			"claude",
+		},
+		{
+			"claude prompt", AgentClaude, ApprovalOnRequest, "fix it",
+			`claude -- 'fix it'`,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -185,14 +205,21 @@ func TestApprovalAutoIsDistinct(t *testing.T) {
 }
 
 func TestAgentNextWraps(t *testing.T) {
-	if got := AgentCursor.Next(-1); got != AgentCodewhale {
-		t.Fatalf("cursor.Next(-1) = %v, want codewhale", got)
+	// The modal's order is cursor-agent → claude → codewhale.
+	if got := AgentCursor.Next(1); got != AgentClaude {
+		t.Fatalf("cursor.Next(1) = %v, want claude", got)
+	}
+	if got := AgentClaude.Next(1); got != AgentCodewhale {
+		t.Fatalf("claude.Next(1) = %v, want codewhale", got)
 	}
 	if got := AgentCodewhale.Next(1); got != AgentCursor {
 		t.Fatalf("codewhale.Next(1) = %v, want cursor", got)
 	}
-	if got := AgentCursor.Next(1); got != AgentCodewhale {
-		t.Fatalf("cursor.Next(1) = %v, want codewhale", got)
+	if got := AgentCursor.Next(-1); got != AgentCodewhale {
+		t.Fatalf("cursor.Next(-1) = %v, want codewhale", got)
+	}
+	if got := AgentClaude.Next(-1); got != AgentCursor {
+		t.Fatalf("claude.Next(-1) = %v, want cursor", got)
 	}
 }
 
@@ -313,6 +340,13 @@ func TestLaunchCommandNetwork(t *testing.T) {
 			"cursor egress with auto keeps both", AgentCursor, ApprovalAuto, NetworkOn,
 			"cursor-agent --auto-review --sandbox disabled",
 		},
+		// Claude Code has no sandbox switch, so `net:` must not appear on
+		// its command line at all — the row would be a promise the CLI
+		// cannot keep.
+		{
+			"claude ignores the network row", AgentClaude, ApprovalAuto, NetworkOn,
+			"claude --permission-mode acceptEdits",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -326,7 +360,7 @@ func TestLaunchCommandNetwork(t *testing.T) {
 // LaunchCommand must stay byte-identical to the pre-network behaviour, because
 // it is the seam every existing caller and test goes through.
 func TestLaunchCommandIsConfinedByDefault(t *testing.T) {
-	for _, agent := range []Agent{AgentCodewhale, AgentCursor} {
+	for _, agent := range []Agent{AgentCodewhale, AgentClaude, AgentCursor} {
 		for _, approval := range approvals {
 			want := agent.LaunchCommandWith("", approval, NetworkOff)
 			if got := agent.LaunchCommand("", approval); got != want {
@@ -347,6 +381,7 @@ func TestLaunchOptionsWTExpressible(t *testing.T) {
 		{"plain cursor launch", LaunchOptions{Agent: AgentCursor, Approval: ApprovalOnRequest}, true},
 		{"cursor unattended", LaunchOptions{Agent: AgentCursor, Approval: ApprovalNever}, true},
 		{"codewhale never goes through wt", LaunchOptions{Agent: AgentCodewhale}, false},
+		{"claude never goes through wt", LaunchOptions{Agent: AgentClaude}, false},
 		{"auto posture cannot be expressed", LaunchOptions{Agent: AgentCursor, Approval: ApprovalAuto}, false},
 		{"network cannot be expressed", LaunchOptions{Agent: AgentCursor, Network: NetworkOn}, false},
 		{"setup command cannot be expressed", LaunchOptions{Agent: AgentCursor, Before: "nvm use"}, false},

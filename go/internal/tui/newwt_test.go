@@ -111,18 +111,33 @@ func TestNewWorktreeSelectsCodewhale(t *testing.T) {
 	if mm.form.focused != 3 {
 		t.Fatalf("focused = %d, want 3 (agent)", mm.form.focused)
 	}
+	// The selector cycles cursor-agent → claude → codewhale; ← from the
+	// codewhale default lands on claude first.
+	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	mm = mdl.(*model)
+	if mm.form.agent != wtbridge.AgentClaude {
+		t.Fatalf("agent after ← = %v, want claude", mm.form.agent)
+	}
+	if !strings.Contains(mm.View(), "claude") {
+		t.Fatal("modal does not render the claude agent")
+	}
 	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyLeft})
 	mm = mdl.(*model)
 	if mm.form.agent != wtbridge.AgentCursor {
-		t.Fatalf("agent after ← = %v, want cursor-agent", mm.form.agent)
+		t.Fatalf("agent after ←← = %v, want cursor-agent", mm.form.agent)
 	}
 	if !strings.Contains(mm.View(), "cursor-agent") {
 		t.Fatal("modal does not render the selected agent")
 	}
 	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRight})
 	mm = mdl.(*model)
+	if mm.form.agent != wtbridge.AgentClaude {
+		t.Fatalf("agent after → = %v, want claude", mm.form.agent)
+	}
+	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRight})
+	mm = mdl.(*model)
 	if mm.form.agent != wtbridge.AgentCodewhale {
-		t.Fatalf("agent after → = %v, want codewhale", mm.form.agent)
+		t.Fatalf("agent after →→ = %v, want codewhale", mm.form.agent)
 	}
 
 	mm.form.branch.SetValue("feature-wh")
