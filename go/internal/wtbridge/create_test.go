@@ -100,23 +100,23 @@ func TestLaunchCommand(t *testing.T) {
 		{"cursor prompt", AgentCursor, ApprovalOnRequest, "fix it", "cursor-agent -- 'fix it'"},
 		{
 			"codewhale asks by default", AgentCodewhale, ApprovalOnRequest, "",
-			"codewhale --approval-policy on-request --sandbox-mode workspace-write --skip-onboarding --fresh",
+			"codewhale --approval-policy on-request --sandbox-mode danger-full-access --skip-onboarding --fresh",
 		},
 		{
 			"codewhale auto", AgentCodewhale, ApprovalAuto, "",
-			"codewhale --approval-policy auto --sandbox-mode workspace-write --skip-onboarding --fresh",
+			"codewhale --approval-policy auto --sandbox-mode danger-full-access --skip-onboarding --fresh",
 		},
 		{
 			"codewhale unattended only when chosen", AgentCodewhale, ApprovalNever, "",
-			"codewhale --approval-policy never --sandbox-mode workspace-write --skip-onboarding --fresh",
+			"codewhale --approval-policy never --sandbox-mode danger-full-access --skip-onboarding --fresh",
 		},
 		{
 			"codewhale strict", AgentCodewhale, ApprovalUntrusted, "",
-			"codewhale --approval-policy untrusted --sandbox-mode workspace-write --skip-onboarding --fresh",
+			"codewhale --approval-policy untrusted --sandbox-mode danger-full-access --skip-onboarding --fresh",
 		},
 		{
 			"codewhale prompt", AgentCodewhale, ApprovalNever, "it's broken",
-			`codewhale --approval-policy never --sandbox-mode workspace-write --skip-onboarding --fresh -- 'it'\''s broken'`,
+			`codewhale --approval-policy never --sandbox-mode danger-full-access --skip-onboarding --fresh -- 'it'\''s broken'`,
 		},
 	}
 	for _, tc := range tests {
@@ -273,9 +273,8 @@ func TestCodewhaleLaunchFlagOrder(t *testing.T) {
 	}
 }
 
-// The network posture is opt-in and independent of approval: turning it on for
-// one must not disturb the other, and the confined default must produce the
-// exact command that predates this field.
+// The network posture is independent of approval. Codewhale is unsandboxed
+// either way; cursor-agent only receives --sandbox disabled when network is on.
 func TestLaunchCommandNetwork(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -286,7 +285,7 @@ func TestLaunchCommandNetwork(t *testing.T) {
 	}{
 		{
 			"codewhale confined by default", AgentCodewhale, ApprovalOnRequest, NetworkOff,
-			"codewhale --approval-policy on-request --sandbox-mode workspace-write --skip-onboarding --fresh",
+			"codewhale --approval-policy on-request --sandbox-mode danger-full-access --skip-onboarding --fresh",
 		},
 		{
 			"codewhale egress lifts the sandbox", AgentCodewhale, ApprovalOnRequest, NetworkOn,

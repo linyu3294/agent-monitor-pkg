@@ -86,31 +86,22 @@ The posture maps per CLI, so each agent uses the closest thing it actually has:
 | `never` | `--approval-policy never` | `--yolo` |
 | `untrusted` | `--approval-policy untrusted` | default (no stricter flag exists) |
 
-The sandbox stays `workspace-write` in every posture: the agent edits freely
-inside its worktree and still can't reach the rest of the machine. When `wt` is
-installed, `auto` deliberately bypasses `wt create --iterm` — wt can only express
-`--yolo`, so routing auto through it would silently launch a different posture.
+Codewhale is always started with the sandbox off (`--sandbox-mode danger-full-access`), so its shell is the system shell, the same way `cursor-agent --sandbox disabled` is. When `wt` is installed, `auto` deliberately bypasses `wt create --iterm` — wt can only express `--yolo`, so routing auto through it would silently launch a different posture.
 
 ## Network posture
 
 `net:` is a second, separate choice — "may you run this?" and "can you reach the
 internet?" are different questions, and answering one should not grant the other.
-The dashboard starts it at `on`. Set `AM_DEFAULT_NET=off` to confine a launch. It stays a per-launch choice, like `never (unattended)`.
+The dashboard starts it at `on`. Set `AM_DEFAULT_NET=off` to leave cursor-agent on its configured default. It stays a per-launch choice, like `never (unattended)`.
 
-Neither CLI offers egress on its own, so `on` means the widest mode each one has:
+Codewhale has no separate network switch. Its only unsandboxed mode is `danger-full-access`, so every codewhale launch uses that, whichever way `net:` is set. `net:` changes cursor-agent only:
 
 | `net:` | codewhale | cursor-agent |
 |---|---|---|
-| `off (workspace-write)` | `--sandbox-mode workspace-write` | no flag (its configured default) |
+| `off (workspace-write)` | `--sandbox-mode danger-full-access` | no flag (its configured default) |
 | `on (full access)` | `--sandbox-mode danger-full-access` | `--sandbox disabled` |
 
-**`on` is not a network-only switch.** For codewhale, `danger-full-access` is
-documented as disabling the sandbox entirely, so the agent also gets the whole
-filesystem. cursor-agent's `--sandbox disabled` is the same trade. The modal says
-so, and spells out the consequence that matters: any credential the shell already
-holds — an AWS session from `aws-login`, an SSH agent, a token in the environment —
-becomes reachable by the agent. That is the reason it is a decision you make per
-launch rather than a setting the dashboard picks.
+`danger-full-access` and `--sandbox disabled` both turn the sandbox off, so the agent gets the system shell and the whole filesystem. Any credential that shell already holds — an AWS session from `aws-login`, an SSH agent, a token in the environment — is reachable by the agent.
 
 When `net:` is `off`, cursor-agent gets no sandbox flag at all. Its effective
 default is whatever its own config says, and adding `--sandbox enabled` would

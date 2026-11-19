@@ -281,9 +281,11 @@ func (a Agent) LaunchCommand(prompt string, approval Approval) string {
 
 // LaunchCommandWith is the shell line typed into the new iTerm tab.
 //
-// The sandbox stays at workspace-write so the agent can edit freely inside the
-// new worktree without reaching the rest of the machine, unless the user asked
-// for egress. The approval posture is whatever the user picked:
+// Codewhale is launched with the sandbox off, the same way cursor-agent is
+// launched with `--sandbox disabled`. workspace-write is a sandbox shell: it
+// hides the system terminal, so ~/.bash_profile and the AWS CLI are not there.
+// danger-full-access is the mode Codewhale documents as disabling that sandbox.
+// The approval posture is whatever the user picked:
 //
 //	on-request  codewhale --approval-policy on-request | cursor-agent (default)
 //	auto        codewhale --approval-policy auto        | cursor-agent --auto-review
@@ -294,23 +296,17 @@ func (a Agent) LaunchCommand(prompt string, approval Approval) string {
 // calls and prompts for the rest. It has no stricter-than-default flag, so
 // untrusted maps to its default behaviour rather than inventing one.
 //
-// NetworkOn maps to the widest mode each CLI has, because neither offers egress
-// without it: codewhale's --sandbox-mode values are read-only,
-// workspace-write, danger-full-access and external-sandbox, and danger-full-
-// access is documented as disabling the sandbox entirely. cursor-agent takes
-// --sandbox enabled|disabled. When the posture is off, cursor-agent gets no
-// flag at all — its effective default is whatever its config says, and adding
-// `--sandbox enabled` would change behaviour for users who never asked for it.
+// cursor-agent takes --sandbox enabled|disabled. When the posture is off,
+// cursor-agent gets no flag at all — its effective default is whatever its
+// config says, and adding `--sandbox enabled` would change behaviour for
+// users who never asked for it. Codewhale has no such default: omitting the
+// flag leaves the sandbox shell in place, so it is always started unsandboxed.
 func (a Agent) LaunchCommandWith(prompt string, approval Approval, network Network) string {
 	cmd := "cursor-agent"
 	switch a {
 	case AgentCodewhale:
-		sandbox := "workspace-write"
-		if network == NetworkOn {
-			sandbox = "danger-full-access"
-		}
 		cmd = "codewhale --approval-policy " + approval.Flag() +
-			" --sandbox-mode " + sandbox + " --skip-onboarding --fresh"
+			" --sandbox-mode danger-full-access --skip-onboarding --fresh"
 	default:
 		switch approval {
 		case ApprovalAuto:
