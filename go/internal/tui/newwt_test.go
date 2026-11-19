@@ -369,3 +369,167 @@ func refExistsForTest(t *testing.T, repo, ref string) bool {
 func repoToEncoded(repo string) string {
 	return scanner.EncodeForCursor(strings.TrimPrefix(repo, "/"))
 }
+
+// TestNewWorktreeUsesConfiguredDefaults covers AM_DEFAULT_*. The operator sets
+// these once so an ordinary launch already has egress and the SSO login, instead
+// of retyping both every time.
+func TestNewWorktreeUsesConfiguredDefaults(t *testing.T) {
+	m := New(Options{
+		RefreshInterval: time.Second,
+		IdleThreshold:   time.Hour,
+		MaxCards:        10,
+		DefaultApproval: wtbridge.ApprovalNever,
+		DefaultNetwork:  wtbridge.NetworkOn,
+		DefaultBefore:   "aws sso login --profile bora",
+	}, "test")
+
+	var mdl tea.Model = m
+	mdl, _ = mdl.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	mdl, _ = mdl.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	mm := mdl.(*model)
+
+	if mm.form.approval != wtbridge.ApprovalNever {
+		t.Fatalf("approval = %v, want never", mm.form.approval)
+	}
+	if mm.form.network != wtbridge.NetworkOn {
+		t.Fatalf("network = %v, want on", mm.form.network)
+	}
+	if got := mm.form.before.Value(); got != "aws sso login --profile bora" {
+		t.Fatalf("before = %q, want the configured default", got)
+	}
+	// The default is visible, not silent: a launch that reaches the network has
+	// to say so on the screen the operator is confirming.
+	if !strings.Contains(mm.View(), "sandbox is disabled") {
+		t.Fatalf("configured egress default does not warn:\n%s", mm.View())
+	}
+}
+
+// TestNewWorktreeDefaultSurvivesOneOffEdit keeps the configured default from
+// being destroyed by editing the field for a single launch: the next `n` asks
+// the operator again rather than silently launching without the setup command.
+func TestNewWorktreeDefaultSurvivesOneOffEdit(t *testing.T) {
+	m := New(Options{
+		RefreshInterval: time.Second,
+		IdleThreshold:   time.Hour,
+		MaxCards:        10,
+		DefaultBefore:   "aws sso login --profile bora",
+	}, "test")
+
+	var mdl tea.Model = m
+	mdl, _ = mdl.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	mdl, _ = mdl.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	mm := mdl.(*model)
+
+	mm.form.before.SetValue("")
+	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	mm = mdl.(*model)
+
+	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	mm = mdl.(*model)
+	if got := mm.form.before.Value(); got != "aws sso login --profile bora" {
+		t.Fatalf("before = %q after reopening, want the configured default restored", got)
+	}
+}
+
+// TestNewWorktreeNetworkDefaultsOffAndWarns is the regression guard for egress:
+// a new agent is confined unless the person launching it asks otherwise, and the
+// modal says plainly what turning it on costs.
+func TestNewWorktreeNetworkDefaultsOffAndWarns(t *testing.T) {
+	m := New(Options{RefreshInterval: time.Second, IdleThreshold: time.Hour, MaxCards: 10}, "test")
+
+	var mdl tea.Model = m
+	mdl, _ = mdl.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	mdl, _ = mdl.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	mm := mdl.(*model)
+
+	if mm.form.network != wtbridge.NetworkOff {
+		t.Fatalf("default network = %v, want off", mm.form.network)
+	}
+	if view := mm.View(); !strings.Contains(view, "net:") || !strings.Contains(view, "workspace-write") {
+		t.Fatalf("modal does not render the confined net row:\n%s", view)
+	}
+	if strings.Contains(mm.View(), "sandbox is disabled") {
+		t.Fatal("modal warns about full access before it was selected")
+	}
+
+	// Tab until the net row has focus; the entry point depends on whether a
+	// repo could be inferred from the selected card.
+	for i := 0; mm.form.focused != 5; i++ {
+		if i > newWtFields {
+			t.Fatalf("never reached the net row (focused = %d)", mm.form.focused)
+		}
+		mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyTab})
+		mm = mdl.(*model)
+	}
+
+	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRight})
+	mm = mdl.(*model)
+	if mm.form.network != wtbridge.NetworkOn {
+		t.Fatalf("network after → = %v, want on", mm.form.network)
+	}
+	view := mm.View()
+	if !strings.Contains(view, "full access") {
+		t.Fatalf("modal does not label the egress posture:\n%s", view)
+	}
+	if !strings.Contains(view, "sandbox is disabled") {
+		t.Fatalf("no warning after choosing full access:\n%s", view)
+	}
+	if strings.Contains(view, "will not stop to ask you") {
+		t.Fatal("the egress warning must not be the unattended warning")
+	}
+
+	// ← wraps back to the confined value rather than off the end.
+	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	mm = mdl.(*model)
+	if mm.form.network != wtbridge.NetworkOff {
+		t.Fatalf("network after ← = %v, want off", mm.form.network)
+	}
+
+	// The approval posture is untouched by all of this.
+	if mm.form.approval != wtbridge.ApprovalOnRequest {
+		t.Fatalf("approval = %v, want on-request", mm.form.approval)
+	}
+}
+
+// TestNewWorktreeBeforeSitsBeforePrompt pins the setup row's place in the tab
+// order and proves keystrokes land there rather than leaking into the prompt.
+func TestNewWorktreeBeforeSitsBeforePrompt(t *testing.T) {
+	m := New(Options{RefreshInterval: time.Second, IdleThreshold: time.Hour, MaxCards: 10}, "test")
+
+	var mdl tea.Model = m
+	mdl, _ = mdl.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	mdl, _ = mdl.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	mm := mdl.(*model)
+
+	if !strings.Contains(mm.View(), "before:") {
+		t.Fatalf("modal does not render the before row:\n%s", mm.View())
+	}
+
+	for i := 0; mm.form.focused != 6; i++ {
+		if i > newWtFields {
+			t.Fatalf("never reached the before row (focused = %d)", mm.form.focused)
+		}
+		mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyTab})
+		mm = mdl.(*model)
+	}
+
+	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("aws sso login")})
+	mm = mdl.(*model)
+	if mm.form.before.Value() != "aws sso login" {
+		t.Fatalf("before = %q, want the typed command", mm.form.before.Value())
+	}
+	if mm.form.prompt.Value() != "" {
+		t.Fatalf("prompt = %q, want it untouched", mm.form.prompt.Value())
+	}
+
+	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyTab})
+	mm = mdl.(*model)
+	if mm.form.focused != 7 {
+		t.Fatalf("focused = %d after before, want 7 (prompt)", mm.form.focused)
+	}
+	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ship it")})
+	mm = mdl.(*model)
+	if mm.form.prompt.Value() != "ship it" || mm.form.before.Value() != "aws sso login" {
+		t.Fatalf("prompt=%q before=%q — fields did not stay separate", mm.form.prompt.Value(), mm.form.before.Value())
+	}
+}

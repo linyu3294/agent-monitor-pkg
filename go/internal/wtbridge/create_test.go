@@ -272,3 +272,185 @@ func TestCodewhaleLaunchFlagOrder(t *testing.T) {
 		t.Fatalf("approval policy token = %q, want auto", tokens[policyAt+1])
 	}
 }
+
+// The network posture is opt-in and independent of approval: turning it on for
+// one must not disturb the other, and the confined default must produce the
+// exact command that predates this field.
+func TestLaunchCommandNetwork(t *testing.T) {
+	tests := []struct {
+		name     string
+		agent    Agent
+		approval Approval
+		network  Network
+		want     string
+	}{
+		{
+			"codewhale confined by default", AgentCodewhale, ApprovalOnRequest, NetworkOff,
+			"codewhale --approval-policy on-request --sandbox-mode workspace-write --skip-onboarding --fresh",
+		},
+		{
+			"codewhale egress lifts the sandbox", AgentCodewhale, ApprovalOnRequest, NetworkOn,
+			"codewhale --approval-policy on-request --sandbox-mode danger-full-access --skip-onboarding --fresh",
+		},
+		{
+			"network does not disturb approval", AgentCodewhale, ApprovalNever, NetworkOn,
+			"codewhale --approval-policy never --sandbox-mode danger-full-access --skip-onboarding --fresh",
+		},
+		{
+			"cursor confined emits no sandbox flag", AgentCursor, ApprovalOnRequest, NetworkOff,
+			"cursor-agent",
+		},
+		{
+			"cursor egress disables its sandbox", AgentCursor, ApprovalOnRequest, NetworkOn,
+			"cursor-agent --sandbox disabled",
+		},
+		{
+			"cursor egress with auto keeps both", AgentCursor, ApprovalAuto, NetworkOn,
+			"cursor-agent --auto-review --sandbox disabled",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.agent.LaunchCommandWith("", tc.approval, tc.network); got != tc.want {
+				t.Fatalf("LaunchCommandWith = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// LaunchCommand must stay byte-identical to the pre-network behaviour, because
+// it is the seam every existing caller and test goes through.
+func TestLaunchCommandIsConfinedByDefault(t *testing.T) {
+	for _, agent := range []Agent{AgentCodewhale, AgentCursor} {
+		for _, approval := range approvals {
+			want := agent.LaunchCommandWith("", approval, NetworkOff)
+			if got := agent.LaunchCommand("", approval); got != want {
+				t.Fatalf("%v/%v: LaunchCommand = %q, want %q", agent, approval, got, want)
+			}
+		}
+	}
+}
+
+// wt can only express --yolo and --prompt. Anything it would silently drop must
+// route through git instead, or the user gets a launch they did not choose.
+func TestLaunchOptionsWTExpressible(t *testing.T) {
+	tests := []struct {
+		name string
+		opts LaunchOptions
+		want bool
+	}{
+		{"plain cursor launch", LaunchOptions{Agent: AgentCursor, Approval: ApprovalOnRequest}, true},
+		{"cursor unattended", LaunchOptions{Agent: AgentCursor, Approval: ApprovalNever}, true},
+		{"codewhale never goes through wt", LaunchOptions{Agent: AgentCodewhale}, false},
+		{"auto posture cannot be expressed", LaunchOptions{Agent: AgentCursor, Approval: ApprovalAuto}, false},
+		{"network cannot be expressed", LaunchOptions{Agent: AgentCursor, Network: NetworkOn}, false},
+		{"setup command cannot be expressed", LaunchOptions{Agent: AgentCursor, Before: "nvm use"}, false},
+		{"blank setup is still expressible", LaunchOptions{Agent: AgentCursor, Before: "   "}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.opts.wtExpressible(); got != tc.want {
+				t.Fatalf("wtExpressible = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// launchLine is what actually gets typed into the new tab. It is composed as one
+// shell line, so the shape of that line — cd, setup, agent, in that order, joined
+// by && — is worth pinning down without spawning iTerm.
+func TestLaunchLine(t *testing.T) {
+	tests := []struct {
+		name   string
+		cwd    string
+		before string
+		cmd    string
+		want   string
+	}{
+		{
+			"no setup command",
+			"/tmp/repo", "", "cursor-agent",
+			"cd '/tmp/repo' && cursor-agent",
+		},
+		{
+			"blank setup is ignored",
+			"/tmp/repo", "   ", "cursor-agent",
+			"cd '/tmp/repo' && cursor-agent",
+		},
+		{
+			"setup runs after the cd and before the agent",
+			"/tmp/repo", "aws sso login --profile bora", "codewhale --approval-policy on-request",
+			"cd '/tmp/repo' && aws sso login --profile bora && codewhale --approval-policy on-request",
+		},
+		{
+			"a failing setup still short-circuits the agent",
+			"/tmp/repo", "false", "cursor-agent",
+			"cd '/tmp/repo' && false && cursor-agent",
+		},
+		{
+			"cwd is quoted",
+			"/tmp/my repo", "", "cursor-agent",
+			"cd '/tmp/my repo' && cursor-agent",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := launchLine(tc.cwd, tc.before, tc.cmd); got != tc.want {
+				t.Fatalf("launchLine = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// ParseNetwork feeds the AM_DEFAULT_NET config value. Spelling variants matter
+// because a shell profile, a docs example, and the modal label all naturally
+// pick different ones.
+func TestParseNetwork(t *testing.T) {
+	tests := []struct {
+		in   string
+		want Network
+		ok   bool
+	}{
+		{"on", NetworkOn, true},
+		{"ON", NetworkOn, true},
+		{" full ", NetworkOn, true},
+		{"danger-full-access", NetworkOn, true},
+		{"off", NetworkOff, true},
+		{"workspace-write", NetworkOff, true},
+		{"confined", NetworkOff, true},
+		{"", NetworkOff, false},
+		{"yes", NetworkOff, false},
+		{"network", NetworkOn, true},
+	}
+	for _, tc := range tests {
+		got, ok := ParseNetwork(tc.in)
+		if got != tc.want || ok != tc.ok {
+			t.Fatalf("ParseNetwork(%q) = (%v, %v), want (%v, %v)", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// ParseApproval accepts codewhale's flag values and the modal's long labels.
+func TestParseApproval(t *testing.T) {
+	tests := []struct {
+		in   string
+		want Approval
+		ok   bool
+	}{
+		{"on-request", ApprovalOnRequest, true},
+		{"ask", ApprovalOnRequest, true},
+		{"auto", ApprovalAuto, true},
+		{"never", ApprovalNever, true},
+		{"never (unattended)", ApprovalNever, true},
+		{"untrusted", ApprovalUntrusted, true},
+		{"untrusted (strict)", ApprovalUntrusted, true},
+		{"", ApprovalOnRequest, false},
+		{"yolo", ApprovalOnRequest, false},
+	}
+	for _, tc := range tests {
+		got, ok := ParseApproval(tc.in)
+		if got != tc.want || ok != tc.ok {
+			t.Fatalf("ParseApproval(%q) = (%v, %v), want (%v, %v)", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}

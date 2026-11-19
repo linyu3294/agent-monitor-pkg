@@ -23,6 +23,7 @@ import (
 	"github.com/agent-monitor/agent-monitor/internal/proctable"
 	"github.com/agent-monitor/agent-monitor/internal/scanner"
 	"github.com/agent-monitor/agent-monitor/internal/tui"
+	"github.com/agent-monitor/agent-monitor/internal/wtbridge"
 )
 
 // version is overridden at link time via `-ldflags="-X main.version=..."`.
@@ -61,6 +62,9 @@ func main() {
 		RefreshInterval: time.Duration(*refreshMs) * time.Millisecond,
 		IdleThreshold:   time.Duration(*idleMin) * time.Minute,
 		MaxCards:        *maxCards,
+		DefaultApproval: envApproval("AM_DEFAULT_APPROVAL", wtbridge.ApprovalOnRequest),
+		DefaultNetwork:  envNetwork("AM_DEFAULT_NET", wtbridge.NetworkOff),
+		DefaultBefore:   strings.TrimSpace(os.Getenv("AM_DEFAULT_BEFORE")),
 	}
 	prog := tea.NewProgram(tui.New(opts, version), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := prog.Run(); err != nil {
@@ -252,4 +256,36 @@ func envInt(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+// envApproval reads a configured approval posture. An unrecognised value warns
+// and falls back rather than exiting: this is a convenience default, and a
+// monitor that refuses to start because of a typo in a shell profile is worse
+// than one that tells you the typo and keeps working.
+func envApproval(key string, def wtbridge.Approval) wtbridge.Approval {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	got, ok := wtbridge.ParseApproval(v)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "agent-monitor: ignoring %s=%q (want on-request, auto, never, or untrusted); using %q\n", key, v, def)
+		return def
+	}
+	return got
+}
+
+// envNetwork reads a configured network posture. Same warn-and-continue rule as
+// envApproval, for the same reason.
+func envNetwork(key string, def wtbridge.Network) wtbridge.Network {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	got, ok := wtbridge.ParseNetwork(v)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "agent-monitor: ignoring %s=%q (want on or off); using %q\n", key, v, def)
+		return def
+	}
+	return got
 }

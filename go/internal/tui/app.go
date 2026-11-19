@@ -34,6 +34,14 @@ type Options struct {
 	RefreshInterval time.Duration
 	IdleThreshold   time.Duration
 	MaxCards        int
+
+	// New-worktree defaults. They seed the `n` modal and are still fully
+	// editable per launch — they decide where the cursor starts, not what the
+	// launch is allowed to do. Zero values are the confined, asks-first
+	// defaults, so an unset field cannot widen a launch.
+	DefaultApproval wtbridge.Approval
+	DefaultNetwork  wtbridge.Network
+	DefaultBefore   string
 }
 
 // uiState enumerates the dashboard's modal layers.
@@ -60,9 +68,11 @@ type newWtForm struct {
 	branch   textinput.Model
 	base     textinput.Model
 	prompt   textinput.Model
+	before   textinput.Model
 	agent    wtbridge.Agent
 	approval wtbridge.Approval
-	focused  int // 0=repo, 1=branch, 2=base, 3=agent, 4=approval, 5=prompt
+	network  wtbridge.Network
+	focused  int // 0=repo, 1=branch, 2=base, 3=agent, 4=approval, 5=network, 6=before, 7=prompt
 	err      string
 }
 
@@ -147,6 +157,11 @@ func New(opts Options, version string) *model {
 	prompt.Prompt = ""
 	prompt.CharLimit = 200
 	prompt.Width = 50
+	before := textinput.New()
+	before.Prompt = ""
+	before.Placeholder = "optional: shell command to run first"
+	before.CharLimit = 300
+	before.Width = 50
 	return &model{
 		opts:    opts,
 		scanner: scn,
@@ -158,10 +173,14 @@ func New(opts Options, version string) *model {
 			branch: branch,
 			base:   base,
 			prompt: prompt,
+			before: before,
 			agent:  defaultAgent(),
-			// On-request: the new agent asks before it acts. Running
-			// unattended is available, but only if the user picks it.
-			approval: wtbridge.ApprovalOnRequest,
+			// From Options, which main.go fills from AM_DEFAULT_*. The zero
+			// values are on-request and confined: a new agent asks before it
+			// acts and has no egress unless the operator configured otherwise
+			// or the person launching it changes the field.
+			approval: opts.DefaultApproval,
+			network:  opts.DefaultNetwork,
 		},
 		tombstones: map[string]struct{}{},
 		version:    version,
