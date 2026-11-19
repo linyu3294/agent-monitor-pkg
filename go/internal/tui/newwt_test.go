@@ -286,21 +286,47 @@ func TestNewWorktreeApprovalDefaultsToAsk(t *testing.T) {
 	if strings.Contains(mm.View(), "will not stop to ask you") {
 		t.Fatal("auto must not carry the unattended warning")
 	}
+	if !strings.Contains(mm.View(), "Shift+Tab") {
+		t.Fatalf("codewhale modal does not explain the permission dial:\n%s", mm.View())
+	}
 
-	// One more step is the unattended posture, which must warn.
+	// One more step is the unattended posture. Codewhale does not pin it:
+	// --approval-policy locks Shift+Tab, so the warning stays with cursor-agent.
 	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRight})
 	mm = mdl.(*model)
 	if mm.form.approval != wtbridge.ApprovalNever {
 		t.Fatalf("approval after →→ = %v, want never", mm.form.approval)
 	}
-	if !strings.Contains(mm.View(), "will not stop to ask you") {
-		t.Fatalf("no warning after choosing unattended:\n%s", mm.View())
+	if strings.Contains(mm.View(), "will not stop to ask you") {
+		t.Fatalf("codewhale modal warned about a posture it does not pin:\n%s", mm.View())
 	}
 
-	// The chosen posture reaches the launcher: never -> explicit never.
 	cmd := mm.form.agent.LaunchCommand("", mm.form.approval)
-	if !strings.Contains(cmd, "--approval-policy never") {
-		t.Fatalf("launch command = %q, want --approval-policy never", cmd)
+	if strings.Contains(cmd, "--approval-policy") {
+		t.Fatalf("launch command pins the permission dial: %q", cmd)
+	}
+	if !strings.Contains(cmd, "--sandbox-mode danger-full-access") {
+		t.Fatalf("launch command = %q, want the sandbox off", cmd)
+	}
+
+	for i := 0; mm.form.focused != 3; i++ {
+		if i > newWtFields {
+			t.Fatalf("never reached the agent row (focused = %d)", mm.form.focused)
+		}
+		mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+		mm = mdl.(*model)
+	}
+	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRight})
+	mm = mdl.(*model)
+	if mm.form.agent != wtbridge.AgentCursor {
+		t.Fatalf("agent after → = %v, want cursor", mm.form.agent)
+	}
+	if !strings.Contains(mm.View(), "will not stop to ask you") {
+		t.Fatalf("no warning after choosing unattended for cursor-agent:\n%s", mm.View())
+	}
+	cursorCmd := mm.form.agent.LaunchCommand("", mm.form.approval)
+	if !strings.Contains(cursorCmd, "--yolo") {
+		t.Fatalf("cursor launch = %q, want --yolo", cursorCmd)
 	}
 }
 
