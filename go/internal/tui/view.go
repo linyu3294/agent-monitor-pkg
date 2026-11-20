@@ -442,7 +442,65 @@ Press any key to close.`
 	return m.centerInModal(styleHelpBody.Render(body))
 }
 
+// modalMaxWidth caps the modal's content width in cells. A modal sized by
+// its longest sentence stretches across a wide terminal, which leaves the
+// labels hugging the left edge and every value drifting away from them.
+const modalMaxWidth = 88
+
+// modalContentWidth is the usable width inside the modal frame: terminal
+// width minus the border and the two-cell padding on each side, capped so
+// the form stays a readable column on a large screen.
+func (m *model) modalContentWidth() int {
+	w := m.width - 8
+	if w > modalMaxWidth {
+		w = modalMaxWidth
+	}
+	if w < 40 {
+		w = 40
+	}
+	return w
+}
+
+// wrapPlain word-wraps unstyled text to width. Styling happens after this,
+// so the escape sequences never affect where a line breaks. A single word
+// longer than the limit is left intact rather than split.
+func wrapPlain(s string, width int) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	if width < 1 {
+		return []string{s}
+	}
+	var out []string
+	var line strings.Builder
+	lineW := 0
+	for _, word := range strings.Fields(s) {
+		w := lipgloss.Width(word)
+		switch {
+		case lineW == 0:
+			line.WriteString(word)
+			lineW = w
+		case lineW+1+w <= width:
+			line.WriteString(" ")
+			line.WriteString(word)
+			lineW += 1 + w
+		default:
+			out = append(out, line.String())
+			line.Reset()
+			line.WriteString(word)
+			lineW = w
+		}
+	}
+	if line.Len() > 0 {
+		out = append(out, line.String())
+	}
+	return out
+}
+
 func (m *model) viewNewWt() string {
+	contentW := m.modalContentWidth()
+
 	var b strings.Builder
 	b.WriteString(styleHelpTitle.Render("new worktree"))
 	b.WriteString("\n")
@@ -467,42 +525,43 @@ func (m *model) viewNewWt() string {
 		b.WriteString(styleConfirmErr.Render(m.form.err))
 		b.WriteString("\n")
 	}
-	b.WriteString("\n")
-	b.WriteString(styleDim.Render("repo is the git checkout · base is detected from the repo · agent is the CLI launched in the new tab"))
+
+	// Hints are collected as plain text and wrapped to the modal width, so
+	// one long sentence cannot widen the frame.
+	var hints []string
+	add := func(style lipgloss.Style, text string) {
+		for _, line := range wrapPlain(text, contentW) {
+			hints = append(hints, style.Render(line))
+		}
+	}
+	add(styleDim, "repo is the git checkout · base comes from the repo · agent is the CLI the tab runs")
 	switch {
 	case m.form.agent == wtbridge.AgentCodewhale:
-		b.WriteString("\n")
-		b.WriteString(styleDim.Render("codewhale: no asks/net rows — the dial lives inside the session (Shift+Tab cycles Ask → Auto-Review → Full Access)"))
-		b.WriteString("\n")
-		b.WriteString(styleDim.Render("its only unsandboxed mode is danger-full-access, so every launch already has the network"))
+		add(styleDim, "no asks/net rows: the dial lives inside the session (Shift+Tab)")
+		add(styleDim, "always unsandboxed — danger-full-access on every launch")
 	case m.form.agent == wtbridge.AgentClaude:
-		b.WriteString("\n")
-		b.WriteString(styleDim.Render("claude: asks → --permission-mode manual (on-request) / auto / dontAsk (untrusted) / --dangerously-skip-permissions (never)"))
-		b.WriteString("\n")
-		b.WriteString(styleDim.Render("no net row: claude has no sandbox switch, so every launch is already unsandboxed"))
+		add(styleDim, "asks → --permission-mode manual / auto / dontAsk, or --dangerously-skip-permissions")
+		add(styleDim, "no net row: claude has no sandbox switch, so every launch is already unsandboxed")
 		if m.form.approval == wtbridge.ApprovalNever {
-			b.WriteString("\n")
-			b.WriteString(styleConfirm.Render("unattended: the new agent will not stop to ask you before it acts"))
+			add(styleConfirm, "unattended: the agent will not stop to ask you before it acts")
 		} else if m.form.approval == wtbridge.ApprovalAuto {
-			b.WriteString("\n")
-			b.WriteString(styleDim.Render("auto: claude's own classifier clears routine calls · risky ones still prompt"))
+			add(styleDim, "auto: claude's own classifier clears routine calls · risky ones still prompt")
 		}
 	case m.form.approval == wtbridge.ApprovalNever:
-		b.WriteString("\n")
-		b.WriteString(styleConfirm.Render("unattended: the new agent will not stop to ask you before it acts"))
+		add(styleConfirm, "unattended: the agent will not stop to ask you before it acts")
 	case m.form.approval == wtbridge.ApprovalAuto:
-		b.WriteString("\n")
-		b.WriteString(styleDim.Render("auto: the agent applies its own approval policy · on-request asks you every time"))
+		add(styleDim, "auto: the agent applies its own approval policy · on-request asks every time")
 	}
 	if m.form.network == wtbridge.NetworkOn && m.form.agent == wtbridge.AgentCursor {
-		b.WriteString("\n")
-		b.WriteString(styleConfirm.Render("net on: the sandbox is disabled — the agent reaches the network and the whole filesystem"))
-		b.WriteString("\n")
-		b.WriteString(styleDim.Render("any credential this shell already holds becomes reachable — an AWS session, an SSH agent, a token in your env"))
+		add(styleConfirm, "net on: the sandbox is off — the agent reaches the network and the whole filesystem")
+		add(styleDim, "any credential this shell holds is reachable — AWS session, SSH agent, env token")
 	}
 	if strings.TrimSpace(m.form.before.Value()) != "" {
+		add(styleDim, "before runs in the new worktree first · if it fails, the agent does not start")
+	}
+	if len(hints) > 0 {
 		b.WriteString("\n")
-		b.WriteString(styleDim.Render("before runs in the new worktree first · if it fails, the agent does not start"))
+		b.WriteString(strings.Join(hints, "\n"))
 	}
 	return m.centerInModal(b.String())
 }
