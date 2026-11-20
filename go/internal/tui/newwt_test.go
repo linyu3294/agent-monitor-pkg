@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/agent-monitor/agent-monitor/internal/scanner"
 	"github.com/agent-monitor/agent-monitor/internal/session"
@@ -509,7 +510,7 @@ func TestNewWorktreeUsesConfiguredDefaults(t *testing.T) {
 	}
 	// The default is visible, not silent: a launch that reaches the network has
 	// to say so on the screen the operator is confirming.
-	if !strings.Contains(mm.View(), "sandbox is disabled") {
+	if !strings.Contains(mm.View(), "the sandbox is off") {
 		t.Fatalf("configured egress default does not warn:\n%s", mm.View())
 	}
 }
@@ -561,7 +562,7 @@ func TestNewWorktreeNetworkDefaultsOffAndWarns(t *testing.T) {
 	if view := mm.View(); !strings.Contains(view, "net:") || !strings.Contains(view, "workspace-write") {
 		t.Fatalf("modal does not render the confined net row:\n%s", view)
 	}
-	if strings.Contains(mm.View(), "sandbox is disabled") {
+	if strings.Contains(mm.View(), "the sandbox is off") {
 		t.Fatal("modal warns about full access before it was selected")
 	}
 
@@ -584,7 +585,7 @@ func TestNewWorktreeNetworkDefaultsOffAndWarns(t *testing.T) {
 	if !strings.Contains(view, "full access") {
 		t.Fatalf("modal does not label the egress posture:\n%s", view)
 	}
-	if !strings.Contains(view, "sandbox is disabled") {
+	if !strings.Contains(view, "the sandbox is off") {
 		t.Fatalf("no warning after choosing full access:\n%s", view)
 	}
 	if strings.Contains(view, "will not stop to ask you") {
@@ -644,5 +645,56 @@ func TestNewWorktreeBeforeSitsBeforePrompt(t *testing.T) {
 	mm = mdl.(*model)
 	if mm.form.prompt.Value() != "ship it" || mm.form.before.Value() != "aws sso login" {
 		t.Fatalf("prompt=%q before=%q — fields did not stay separate", mm.form.prompt.Value(), mm.form.before.Value())
+	}
+}
+
+// modalFrameWidth measures the rendered modal frame, ignoring the padding
+// lipgloss.Place adds to fill the terminal.
+func modalFrameWidth(view string) int {
+	for _, line := range strings.Split(view, "\n") {
+		i := strings.Index(line, "╭")
+		j := strings.Index(line, "╮")
+		if i >= 0 && j > i {
+			return lipgloss.Width(line[i : j+len("╮")])
+		}
+	}
+	return 0
+}
+
+// A wide terminal must not stretch the modal. The frame used to be sized by
+// its longest sentence, so on a 170-column screen the labels sat at the far
+// left and every value drifted away from them.
+func TestNewWtModalStaysNarrowOnWideTerminal(t *testing.T) {
+	m := New(Options{RefreshInterval: time.Second, IdleThreshold: time.Hour, MaxCards: 10}, "test")
+	var mdl tea.Model = m
+	mdl, _ = mdl.Update(tea.WindowSizeMsg{Width: 240, Height: 50})
+	mdl, _ = mdl.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	mm := mdl.(*model)
+
+	mm.form.agent = wtbridge.AgentClaude
+	got := modalFrameWidth(mm.View())
+	// Border (2) + horizontal padding (2 each side) on top of the content cap.
+	if max := modalMaxWidth + 6; got > max {
+		t.Fatalf("modal frame = %d cols, want <= %d", got, max)
+	}
+}
+
+// On a narrow terminal the hints wrap instead of widening the frame past
+// the screen.
+func TestNewWtModalWrapsOnNarrowTerminal(t *testing.T) {
+	m := New(Options{RefreshInterval: time.Second, IdleThreshold: time.Hour, MaxCards: 10}, "test")
+	var mdl tea.Model = m
+	mdl, _ = mdl.Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	mdl, _ = mdl.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	mm := mdl.(*model)
+
+	mm.form.agent = wtbridge.AgentClaude
+	view := mm.View()
+	if got := modalFrameWidth(view); got > 80 {
+		t.Fatalf("modal frame = %d cols on an 80-col terminal", got)
+	}
+	// The wrapped hint is still present, just split across lines.
+	if !strings.Contains(view, "no sandbox switch") {
+		t.Fatalf("claude's net explanation disappeared when wrapped:\n%s", view)
 	}
 }
