@@ -51,6 +51,7 @@ Re-run `install.sh` any time — it's idempotent.
 | `f` | follow (live transcript tail in iTerm) |
 | `a` | resume in new iTerm tab (with live-process gate) |
 | `y` | copy chat id to clipboard |
+| `t` | focus the agent's iTerm tab |
 | `o` | open worktree in Cursor |
 | `i` | open nvim + Diffview iTerm tab |
 | `n` | new worktree (modal: repo / branch / base / agent / before / prompt, plus `asks` and `net` where the selected agent honours them) |
@@ -182,6 +183,12 @@ This is a fully read-only view of the agent runtime — the dashboard never open
 
 Every card names its agent (`cursor`, `claude`, or `codewhale`) next to the
 project name, so a mixed dashboard stays readable at a glance.
+
+`t` jumps to the tab an agent is running in. Tab labels are not something the
+dashboard can control: each CLI sets its own tab title (codewhale's whale and
+status, Claude's task summary) and iTerm appends the job name, so two agents of
+the same kind read alike. The card knows the agent's pid, and the pid knows its
+pty, so `t` focuses the exact tab rather than guessing from a label.
 
 A card's `cmd:` row names the CLI that resumes it (`cursor-agent --resume <id>`, `claude --resume <id>`, or `codewhale resume <id>`), and `am list` reports that `SOURCE` per row. `f` (follow) works for Cursor and Claude Code transcripts; on a Codewhale card it points you at `a` instead of tailing the wrong file.
 

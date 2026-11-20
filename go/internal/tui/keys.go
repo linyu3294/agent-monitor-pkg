@@ -106,6 +106,8 @@ func (m *model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleResume()
 	case "f":
 		return m.handleFollow()
+	case "t":
+		return m.handleFocusTab()
 	case "x":
 		return m.handlePauseToggle()
 	case "n":
@@ -164,6 +166,37 @@ func (m *model) handleResume() (tea.Model, tea.Cmd) {
 	return m, m.runWtCmd(
 		fmt.Sprintf("resumed %s in new iTerm tab", short(id)),
 		func() error { return m.wt.Resume(id, cwd) },
+	)
+}
+
+// handleFocusTab brings the selected card's iTerm tab to the front.
+//
+// The tab labels cannot identify an agent: each CLI sets its own tab title
+// and iTerm appends the job name, so two codewhale tabs read the same. The
+// card already knows the agent's pid, and the pid knows its pty, so one
+// keystroke lands in the right tab without guessing from a label.
+func (m *model) handleFocusTab() (tea.Model, tea.Cmd) {
+	s := m.selectedSession()
+	if s == nil {
+		return m, nil
+	}
+	pid := s.PID
+	if pid == 0 {
+		pid = m.proc.PID(s.ID)
+	}
+	if pid == 0 {
+		return m, m.flashConfirm("no live agent process for this card", "(nothing to focus)")
+	}
+	tty := wtbridge.TTYForPID(pid)
+	if tty == "" {
+		return m, m.flashConfirm(
+			fmt.Sprintf("agent pid %d is not attached to a terminal", pid),
+			"it was started in the background, so it has no tab",
+		)
+	}
+	return m, m.runWtCmd(
+		fmt.Sprintf("focused %s in iTerm", short(s.ID)),
+		func() error { return wtbridge.FocusITermTTY(tty) },
 	)
 }
 

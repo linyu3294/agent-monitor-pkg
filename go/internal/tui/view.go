@@ -399,8 +399,8 @@ func agoString(mtime int64) string {
 }
 
 func (m *model) renderFooter() string {
-	full := "[j/k] move  [f] follow  [a] attach  [n] new  [i] ide  [x] pause-agent  [r] remove  [?] help"
-	mid := "[j/k] move  [f] follow  [a] attach  [n] new  [i] ide  [?] help"
+	full := "[j/k] move  [f] follow  [a] attach  [t] tab  [n] new  [i] ide  [x] pause-agent  [r] remove  [?] help"
+	mid := "[j/k] move  [f] follow  [a] attach  [t] tab  [n] new  [?] help"
 	short := "[j/k] move  [f] follow  [a] attach  [n] new  [i] ide"
 	rhs := fmt.Sprintf("%d sessions", len(m.sessions))
 
@@ -433,6 +433,7 @@ Multi-agent
   f    follow (live transcript tail)
   a    resume in new iTerm tab
   y    copy chat id to clipboard
+  t    focus the agent's iTerm tab
   o    open in Cursor
   i    open nvim + Diffview (worktree only)
 
