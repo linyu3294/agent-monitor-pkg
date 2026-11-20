@@ -54,6 +54,9 @@ type Table struct {
 	// the join happens in BindClaudeSessions once the scan knows which
 	// session belongs to which directory.
 	claudeProcs []claudeProc
+	// claudeFree are live claude processes that did not bind a session.
+	// They still get a card when one of them runs in a known worktree.
+	claudeFree []claudeProc
 }
 
 // New returns an empty table. Call Refresh before reading.
@@ -133,6 +136,7 @@ func cutField(line []byte) (field, rest []byte, ok bool) {
 func (t *Table) Refresh() {
 	t.byChat = map[string]Process{}
 	t.claudeProcs = nil
+	t.claudeFree = nil
 
 	// Step 1: ps. We want pid, state, elapsed time, command. macOS ps
 	// `state` is the canonical single-letter status (R/S/T/Z/...);
@@ -405,6 +409,33 @@ func (t *Table) Kill(chatID string) error {
 	pid := t.PID(chatID)
 	if pid == 0 {
 		return fmt.Errorf("no live cursor-agent process for chat %s", chatID)
+	}
+	_ = syscall.Kill(pid, syscall.SIGCONT)
+	return syscall.Kill(pid, syscall.SIGTERM)
+}
+
+// PausePID, ResumePID, TogglePausePID and KillPID act on a process the
+// card carries without a bound session id — a Claude Code agent that has
+// launched but has not written its first transcript yet. They exist so a
+// visible card is always a manageable one.
+func PausePID(pid int) error {
+	if pid == 0 {
+		return fmt.Errorf("no live agent process for this card")
+	}
+	return syscall.Kill(pid, syscall.SIGSTOP)
+}
+
+func ResumePID(pid int) error {
+	if pid == 0 {
+		return fmt.Errorf("no live agent process for this card")
+	}
+	return syscall.Kill(pid, syscall.SIGCONT)
+}
+
+// KillPID sends SIGCONT (in case paused) then SIGTERM.
+func KillPID(pid int) error {
+	if pid == 0 {
+		return fmt.Errorf("no live agent process for this card")
 	}
 	_ = syscall.Kill(pid, syscall.SIGCONT)
 	return syscall.Kill(pid, syscall.SIGTERM)

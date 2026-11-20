@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/agent-monitor/agent-monitor/internal/scanner"
 	"github.com/agent-monitor/agent-monitor/internal/session"
 	"github.com/agent-monitor/agent-monitor/internal/wtbridge"
 )
@@ -39,6 +40,7 @@ var (
 	styleStateActive   = lipgloss.NewStyle().Foreground(colorGreen).Bold(true)    // neon green
 	styleStateThinking = lipgloss.NewStyle().Foreground(colorPurple).Bold(true)   // purple (was yellow)
 	styleStateIdle     = lipgloss.NewStyle().Foreground(colorGrey)                // grey, unchanged
+	styleStateStarting = lipgloss.NewStyle().Foreground(colorYellow).Bold(true)   // live, no transcript yet
 	stylePaused        = lipgloss.NewStyle().Foreground(colorPinkSoft).Bold(true) // soft pink
 
 	// Card borders: title row gets the brighter accent so each card's
@@ -83,6 +85,8 @@ func styleForState(state session.State) lipgloss.Style {
 		return styleStateIdle
 	case session.StatePaused:
 		return stylePaused
+	case session.StateStarting:
+		return styleStateStarting
 	}
 	return styleDim
 }
@@ -299,15 +303,22 @@ func (m *model) renderCard(s session.Session, selected bool) string {
 	contentW := totalW - 4
 	rows := []string{
 		renderRow(contentW, "project:", fmt.Sprintf("%s   worktree: %s", s.Project, wt), styleValue),
-		renderRow(contentW, "tool:", emptyOr(s.LastTool, "(thinking)"), styleValue),
+		renderRow(contentW, "tool:", toolOrPending(s), styleValue),
 	}
 	if s.LastText != "" {
 		quoted := `"` + s.LastText + `"`
 		rows = append(rows, renderRow(contentW, "last:", quoted, styleValue))
 	}
+	// A card with no session yet has no resume command; printing
+	// "claude --resume (no session)" would advertise something that cannot
+	// work.
+	cmdText := s.ResumeCommand()
+	if s.ID == scanner.NoSessionID {
+		cmdText = "(waiting for the first turn)"
+	}
 	rows = append(rows,
 		renderRow(contentW, "id:", s.ID, styleValueId),
-		renderRow(contentW, "cmd:", s.ResumeCommand(), styleDim),
+		renderRow(contentW, "cmd:", cmdText, styleDim),
 	)
 
 	bot := "  " + styleCardBorder.Render("└"+strings.Repeat("─", totalW-2)+"┘")
@@ -354,6 +365,18 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(r[:n])
+}
+
+// toolOrPending names the tool row. A stub card has no turn to report, so
+// claiming "(thinking)" would describe work that has not started.
+func toolOrPending(s session.Session) string {
+	if s.LastTool != "" {
+		return s.LastTool
+	}
+	if s.ID == scanner.NoSessionID {
+		return "(no turn yet)"
+	}
+	return "(thinking)"
 }
 
 func emptyOr(v, fallback string) string {

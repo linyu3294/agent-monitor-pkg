@@ -31,6 +31,11 @@ const (
 	StateThinking State = "THINKING"
 	StateIdle     State = "IDLE"
 	StatePaused   State = "PAUSED"
+	// StateStarting is a live agent that has not written a transcript yet.
+	// Claude Code creates its session file with the first turn, so between
+	// launch and that turn there is no store record — but the process is
+	// running and worth a card.
+	StateStarting State = "STARTING"
 )
 
 // Source identifies the agent CLI that owns a transcript. The zero value

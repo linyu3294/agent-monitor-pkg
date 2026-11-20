@@ -330,3 +330,49 @@ func TestClaudeIDFromOpenPath(t *testing.T) {
 		})
 	}
 }
+
+// An agent that has launched but has not written a transcript must still be
+// reachable, so the dashboard can show it and signal it.
+func TestClaudeProcessAtFindsUnboundProcess(t *testing.T) {
+	dir := t.TempDir()
+	started := time.Now().Add(-time.Minute)
+
+	tbl := &Table{
+		byChat:      map[string]Process{},
+		claudeProcs: []claudeProc{{pid: 4242, state: 'R', started: started, cwd: dir}},
+	}
+	// No transcripts at all yet.
+	tbl.BindClaudeSessions(nil)
+
+	proc, ok := tbl.ClaudeProcessAt(dir)
+	if !ok {
+		t.Fatal("a live claude process with no transcript was not findable")
+	}
+	if proc.PID != 4242 || proc.State != 'R' {
+		t.Fatalf("process = %+v, want pid 4242 state R", proc)
+	}
+	if _, ok := tbl.ClaudeProcessAt(t.TempDir()); ok {
+		t.Fatal("matched an unrelated directory")
+	}
+}
+
+// Once a process is bound to a session card, it is not a starting card: the
+// real session wins, because it can be resumed.
+func TestClaudeProcessAtExcludesBoundProcess(t *testing.T) {
+	dir := t.TempDir()
+	started := time.Now().Add(-time.Minute)
+
+	tbl := &Table{
+		byChat:      map[string]Process{},
+		claudeProcs: []claudeProc{{pid: 4242, state: 'R', started: started, cwd: dir}},
+	}
+	tbl.BindClaudeSessions(map[string][]ClaudeSessionRef{
+		dir: {{ID: "session-a", Mtime: started.Add(time.Minute).Unix()}},
+	})
+	if _, bound := tbl.byChat["session-a"]; !bound {
+		t.Fatal("session-a was not bound")
+	}
+	if _, ok := tbl.ClaudeProcessAt(dir); ok {
+		t.Fatal("a bound process was also offered as a starting card")
+	}
+}

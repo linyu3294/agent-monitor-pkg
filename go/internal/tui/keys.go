@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/agent-monitor/agent-monitor/internal/proctable"
 	"github.com/agent-monitor/agent-monitor/internal/scanner"
 	"github.com/agent-monitor/agent-monitor/internal/session"
 	"github.com/agent-monitor/agent-monitor/internal/wtbridge"
@@ -180,6 +181,12 @@ func (m *model) handleFollow() (tea.Model, tea.Cmd) {
 			"press 'a' to resume this Codewhale session in a new tab",
 		)
 	}
+	if s.ID == scanner.NoSessionID {
+		return m, m.flashConfirm(
+			"no transcript to tail yet",
+			"the agent has not written its first turn",
+		)
+	}
 	id := s.ID
 	return m, m.runWtCmd(
 		fmt.Sprintf("following %s in new iTerm tab", short(id)),
@@ -204,12 +211,31 @@ func (m *model) handlePauseToggle() (tea.Model, tea.Cmd) {
 	if s == nil {
 		return m, nil
 	}
-	if !m.proc.IsLive(s.ID) {
+	id := s.ID
+	// A starting card carries a pid without a bound session id, so the
+	// id-keyed toggle would report "no live process" for an agent that is
+	// plainly running.
+	pid := m.proc.PID(id)
+	if pid == 0 {
+		pid = s.PID
+	}
+	if pid == 0 {
 		return m, m.flashConfirm("no live agent process for this session", "(already exited?)")
 	}
-	id := s.ID
 	wasPaused := m.proc.IsPaused(id)
-	if err := m.proc.TogglePause(id); err != nil {
+	if id == scanner.NoSessionID {
+		wasPaused = s.Paused
+	}
+	var err error
+	switch {
+	case id == scanner.NoSessionID && wasPaused:
+		err = proctable.ResumePID(pid)
+	case id == scanner.NoSessionID:
+		err = proctable.PausePID(pid)
+	default:
+		err = m.proc.TogglePause(id)
+	}
+	if err != nil {
 		return m, m.flashConfirm("pause toggle failed", err.Error())
 	}
 	verb := "paused"
@@ -396,7 +422,9 @@ func (m *model) handleConfirmRemoveKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// live process to begin with (idle agent). That's the
 				// expected case for "remove an idle card" — swallow
 				// it so the worktree-removal path still runs.
-				_ = m.proc.Kill(id)
+				if err := m.proc.Kill(id); err != nil && s.PID != 0 {
+					_ = proctable.KillPID(s.PID)
+				}
 				if hasWorktree {
 					if primary == "" {
 						return fmt.Errorf("could not infer primary repo for worktree '%s'", slug)

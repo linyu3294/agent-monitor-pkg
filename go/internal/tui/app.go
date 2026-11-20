@@ -239,6 +239,7 @@ func (m *model) refreshCmd() tea.Cmd {
 		// needs the scan's workspace → session mapping, which is why it
 		// happens here and not inside Refresh.
 		m.proc.BindClaudeSessions(proctable.ClaudeWorkspaceIndex(raw))
+		EnrichStartingCards(raw, m.proc)
 		var wtmID string
 		hiddenEmpty := 0
 		filtered := raw[:0]
@@ -247,7 +248,10 @@ func (m *model) refreshCmd() tea.Cmd {
 			if _, ok := tombstones[tombstoneKey(s)]; ok {
 				continue
 			}
-			if s.ID == scanner.NoSessionID && !showEmpty {
+			// A stub with a live process is not an empty worktree: an agent
+			// is running there, it just has not written a turn yet. Hiding
+			// it would hide the agent itself.
+			if s.ID == scanner.NoSessionID && !showEmpty && s.PID == 0 {
 				hiddenEmpty++
 				continue
 			}
@@ -262,9 +266,16 @@ func (m *model) refreshCmd() tea.Cmd {
 			if OrphanedWorktree(s, m.proc.IsLive(s.ID)) {
 				continue
 			}
-			s.State = classifier.Classify(s, m.proc)
-			s.PID = m.proc.PID(s.ID)
-			s.Paused = m.proc.IsPaused(s.ID)
+			// A starting card already names its process; classifying it by
+			// session id would reset it to IDLE, because the id is the stub
+			// placeholder and no process is bound to it. The test is the
+			// bound pid, not the state: a paused starting card reads PAUSED
+			// and must survive this pass too.
+			if !(s.ID == scanner.NoSessionID && s.PID != 0) {
+				s.State = classifier.Classify(s, m.proc)
+				s.PID = m.proc.PID(s.ID)
+				s.Paused = m.proc.IsPaused(s.ID)
+			}
 			if s.WorktreeSlug != "" {
 				if idx, ok := seenWorktree[s.ProjectDir]; ok {
 					// A worktree's directory mtime can overtake its
@@ -282,6 +293,62 @@ func (m *model) refreshCmd() tea.Cmd {
 		}
 		return scanResultMsg{sessions: filtered, wtManagerID: wtmID, hiddenEmpty: hiddenEmpty}
 	}
+}
+
+// EnrichStartingCards gives a worktree stub card the agent that is running
+// in it but has not written a transcript yet.
+//
+// Claude Code creates its session file with the first turn. A tab that has
+// launched `claude` and is still working through its setup command (or is
+// sitting at the first-run trust prompt) therefore has a live process and
+// no store record at all — the dashboard would show nothing. This makes the
+// worktree's stub card name that agent and carry its pid, so the card can
+// be paused or killed like any other.
+// startingLocator finds a live agent process that is running in a
+// directory but has not been bound to a session.
+type startingLocator interface {
+	ClaudeProcessAt(dir string) (proctable.Process, bool)
+}
+
+func EnrichStartingCards(sessions []session.Session, tbl startingLocator) {
+	for i := range sessions {
+		s := &sessions[i]
+		if s.ID != scanner.NoSessionID || s.WorktreeSlug == "" {
+			continue
+		}
+		dir := stubWorkspace(*s)
+		if dir == "" {
+			continue
+		}
+		proc, ok := tbl.ClaudeProcessAt(dir)
+		if !ok {
+			continue
+		}
+		s.Source = session.SourceClaude
+		s.PID = proc.PID
+		s.Paused = proc.State == 'T'
+		s.State = session.StateStarting
+		if s.Paused {
+			s.State = session.StatePaused
+		}
+	}
+}
+
+// stubWorkspace resolves a stub card's worktree directory on disk.
+func stubWorkspace(s session.Session) string {
+	primary := scanner.DecodeProjectPath(s.ProjectDir)
+	if primary == "" {
+		return ""
+	}
+	slug := scanner.SlugFromEncoded(primary, s.WorktreeSlug)
+	if slug == "" {
+		return ""
+	}
+	dir := filepath.Join(primary, ".worktrees", slug)
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		return ""
+	}
+	return dir
 }
 
 // Update is the central reducer.

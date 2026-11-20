@@ -172,6 +172,7 @@ func runList(idleMin, maxCards int) {
 	tbl.Refresh()
 	sessions := scn.Scan()
 	tbl.BindClaudeSessions(proctable.ClaudeWorkspaceIndex(sessions))
+	tui.EnrichStartingCards(sessions, tbl)
 	fmt.Printf("%-36s  %-10s  %-7s  %-9s  %-30s  %s\n", "CHAT-ID", "SOURCE", "PID", "STATE", "PROJECT", "WORKTREE")
 	fmt.Println("------------------------------------------------------------------------------------------------------------------------")
 	for _, s := range sessions {
@@ -183,8 +184,10 @@ func runList(idleMin, maxCards int) {
 		if tui.OrphanedWorktree(s, tbl.IsLive(s.ID)) {
 			continue
 		}
-		s.State = classifier.Classify(s, tbl)
-		s.PID = tbl.PID(s.ID)
+		if !(s.ID == scanner.NoSessionID && s.PID != 0) {
+			s.State = classifier.Classify(s, tbl)
+			s.PID = tbl.PID(s.ID)
+		}
 		wt := s.WorktreeSlug
 		if wt == "" {
 			wt = "(primary)"
