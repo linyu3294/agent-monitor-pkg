@@ -276,10 +276,9 @@ func (m *model) renderCard(s session.Session, selected bool) string {
 	}
 
 	stateText := stl.Render(string(state))
-	agent := ""
-	if s.Source == session.SourceCodewhale {
-		agent = "  ·  " + styleAgent.Render("codewhale")
-	}
+	// Every card names its agent. Leaving the label off Cursor cards made
+	// the dashboard look like it only tracked codewhale.
+	agent := "  ·  " + styleAgent.Render(s.AgentLabel())
 	title := fmt.Sprintf(" %s%s  ·  %s ", styleValueBold.Render(s.Project), agent, stateText)
 	rightLabel := fmt.Sprintf(" %s ", styleDim.Render(ago))
 	dashCount := totalW - lipgloss.Width(title) - lipgloss.Width(rightLabel) - 4
@@ -416,6 +415,7 @@ Multi-agent
 
 Worktree lifecycle
   n    new worktree (repo / branch / base / agent / approval / net / before / prompt)
+       agent: cursor-agent · claude · codewhale
        approval: on-request (default) · auto · never · untrusted
        net: on (full access, no sandbox, default) · off (workspace-write)
        before: optional shell command run before the agent starts
@@ -452,8 +452,14 @@ func (m *model) viewNewWt() string {
 	b.WriteString("branch: " + m.form.branch.View() + "\n")
 	b.WriteString("base:   " + m.form.base.View() + "\n")
 	b.WriteString("agent:  " + m.viewAgentField() + "\n")
-	b.WriteString("asks:   " + m.viewApprovalField() + "\n")
-	b.WriteString("net:    " + m.viewNetworkField() + "\n")
+	// Rows appear only where the selected agent can act on them: an inert
+	// row is a promise the launch cannot keep.
+	if m.newWtVisible(fieldApproval) {
+		b.WriteString("asks:   " + m.viewApprovalField() + "\n")
+	}
+	if m.newWtVisible(fieldNetwork) {
+		b.WriteString("net:    " + m.viewNetworkField() + "\n")
+	}
 	b.WriteString("before: " + m.form.before.View() + "\n")
 	b.WriteString("prompt: " + m.form.prompt.View() + "\n")
 	if m.form.err != "" {
@@ -463,17 +469,32 @@ func (m *model) viewNewWt() string {
 	}
 	b.WriteString("\n")
 	b.WriteString(styleDim.Render("repo is the git checkout · base is detected from the repo · agent is the CLI launched in the new tab"))
-	if m.form.agent == wtbridge.AgentCodewhale {
+	switch {
+	case m.form.agent == wtbridge.AgentCodewhale:
 		b.WriteString("\n")
-		b.WriteString(styleDim.Render("codewhale: Shift+Tab in the session cycles Ask → Auto-Review → Full Access. asks is not pinned — that flag locks the dial"))
-	} else if m.form.approval == wtbridge.ApprovalNever {
+		b.WriteString(styleDim.Render("codewhale: no asks/net rows — the dial lives inside the session (Shift+Tab cycles Ask → Auto-Review → Full Access)"))
+		b.WriteString("\n")
+		b.WriteString(styleDim.Render("its only unsandboxed mode is danger-full-access, so every launch already has the network"))
+	case m.form.agent == wtbridge.AgentClaude:
+		b.WriteString("\n")
+		b.WriteString(styleDim.Render("claude: asks → --permission-mode manual (on-request) / auto / dontAsk (untrusted) / --dangerously-skip-permissions (never)"))
+		b.WriteString("\n")
+		b.WriteString(styleDim.Render("no net row: claude has no sandbox switch, so every launch is already unsandboxed"))
+		if m.form.approval == wtbridge.ApprovalNever {
+			b.WriteString("\n")
+			b.WriteString(styleConfirm.Render("unattended: the new agent will not stop to ask you before it acts"))
+		} else if m.form.approval == wtbridge.ApprovalAuto {
+			b.WriteString("\n")
+			b.WriteString(styleDim.Render("auto: claude's own classifier clears routine calls · risky ones still prompt"))
+		}
+	case m.form.approval == wtbridge.ApprovalNever:
 		b.WriteString("\n")
 		b.WriteString(styleConfirm.Render("unattended: the new agent will not stop to ask you before it acts"))
-	} else if m.form.approval == wtbridge.ApprovalAuto {
+	case m.form.approval == wtbridge.ApprovalAuto:
 		b.WriteString("\n")
 		b.WriteString(styleDim.Render("auto: the agent applies its own approval policy · on-request asks you every time"))
 	}
-	if m.form.network == wtbridge.NetworkOn {
+	if m.form.network == wtbridge.NetworkOn && m.form.agent == wtbridge.AgentCursor {
 		b.WriteString("\n")
 		b.WriteString(styleConfirm.Render("net on: the sandbox is disabled — the agent reaches the network and the whole filesystem"))
 		b.WriteString("\n")
@@ -493,7 +514,7 @@ func (m *model) viewAgentField() string {
 	value := m.form.agent.String()
 	styled := styleValue.Render(value)
 	hint := ""
-	if m.form.focused == 3 {
+	if m.form.focused == fieldAgent {
 		styled = styleSel.Render(value)
 		hint = "  " + styleDim.Render("←/→")
 	}
@@ -507,7 +528,7 @@ func (m *model) viewApprovalField() string {
 	value := m.form.approval.String()
 	styled := styleValue.Render(value)
 	hint := ""
-	if m.form.focused == 4 {
+	if m.form.focused == fieldApproval {
 		styled = styleSel.Render(value)
 		hint = "  " + styleDim.Render("←/→")
 	}
@@ -522,7 +543,7 @@ func (m *model) viewNetworkField() string {
 	value := m.form.network.String()
 	styled := styleValue.Render(value)
 	hint := ""
-	if m.form.focused == 5 {
+	if m.form.focused == fieldNetwork {
 		styled = styleSel.Render(value)
 		hint = "  " + styleDim.Render("←/→")
 	}

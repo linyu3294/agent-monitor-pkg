@@ -58,7 +58,10 @@ const codewhaleTailCeiling = 8 << 20
 // with a usable role parses, and reports how many bytes it read. The
 // first window can land entirely inside one oversized record, which
 // yields no complete line at all, so a single fixed tail is not enough.
-func lastTurnBackward(f *os.File, size int64) (session.Role, string, string, int64) {
+//
+// The parser is supplied by the caller because each agent store has its
+// own record shape; the windowing strategy is the same for all of them.
+func lastTurnBackward(f *os.File, size int64, parse func([]byte) (session.Role, string, string)) (session.Role, string, string, int64) {
 	win := int64(codewhaleTailFloor)
 	for {
 		if win > size {
@@ -66,7 +69,7 @@ func lastTurnBackward(f *os.File, size int64) (session.Role, string, string, int
 		}
 		start := size - win
 		buf := readWindow(f, start, size, win)
-		role, tool, text := codewhaleLastTurn(buf)
+		role, tool, text := parse(buf)
 		if role != session.RoleUnknown {
 			return role, tool, text, win
 		}
@@ -213,11 +216,9 @@ func (s *Scanner) codewhaleCandidates(cutoff int64) []candidate {
 	}
 	// Drop workspace entries for logs that no longer exist, so a
 	// long-lived dashboard doesn't hold a growing map of dead paths.
-	for p := range s.whCwd {
-		if _, ok := touched[p]; !ok {
-			delete(s.whCwd, p)
-		}
-	}
+	// Scoped to this store: the map is shared with the Claude
+	// scanner, whose entries this pass must not evict.
+	s.gcWhCwd(root, touched)
 	return out
 }
 
@@ -226,16 +227,7 @@ func (s *Scanner) codewhaleCandidates(cutoff int64) []candidate {
 // cached per (path, mtime) so the head read happens once, not on every
 // tick.
 func (s *Scanner) codewhaleOnLiveWorktree(path string, mtime int64) bool {
-	entry, ok := s.whCwd[path]
-	if !ok || entry.mtime != mtime {
-		entry = whCwdEntry{mtime: mtime, cwd: parseCodewhaleCWD(path)}
-		s.whCwd[path] = entry
-	}
-	enc := encodeCodewhaleCWD(entry.cwd)
-	if enc == "" || worktreeSlugFor(enc) == "" {
-		return false
-	}
-	return !isOrphanedWorktree(enc)
+	return s.agedOutWorktreeIsLive(path, mtime, parseCodewhaleCWD)
 }
 
 // docShape describes a single-document session log: how many messages it
@@ -497,10 +489,9 @@ func ExplainCodewhale(path, id string) Evidence {
 		}
 	}
 	if ev.LastRole == "" {
-		role, tool, text, scanned := lastTurnBackward(f, ev.Size)
+		role, tool, text, scanned := lastTurnBackward(f, ev.Size, codewhaleLastTurn)
 		ev.LastRole, ev.LastTool, ev.LastText = string(role), tool, text
 		ev.ScannedTail = scanned
-		ev.LastRole = string(role)
 	}
 	if ev.LastRole == "" {
 		ev.LastRole = "(unknown)"
@@ -544,7 +535,7 @@ func parseCodewhaleTail(path string, tailBytes int64) (session.Role, string, str
 			return role, tool, text
 		}
 	}
-	role, tool, text, _ := lastTurnBackward(f, size)
+	role, tool, text, _ := lastTurnBackward(f, size, codewhaleLastTurn)
 	return role, tool, text
 }
 

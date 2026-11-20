@@ -128,6 +128,11 @@ func (m *model) handleResume() (tea.Model, tea.Cmd) {
 	if s == nil {
 		return m, nil
 	}
+	if s.ID == scanner.NoSessionID {
+		// A stub card stands for a worktree whose agent has not written a
+		// transcript yet; there is no id any CLI could resume.
+		return m, m.flashConfirm("no session on this worktree yet", "wait for the agent to write its first turn")
+	}
 	if m.proc.IsLive(s.ID) {
 		return m, m.flashConfirm(
 			fmt.Sprintf("session %s is already live in another terminal", short(s.ID)),
@@ -145,6 +150,14 @@ func (m *model) handleResume() (tea.Model, tea.Cmd) {
 		return m, m.runWtCmd(
 			fmt.Sprintf("resumed %s in new iTerm tab", short(id)),
 			func() error { return wtbridge.OpenITerm(cwd, "codewhale resume "+id) },
+		)
+	}
+	if s.Source == session.SourceClaude {
+		// Same reasoning: Claude Code resumes by session id, in the
+		// workspace the card points at.
+		return m, m.runWtCmd(
+			fmt.Sprintf("resumed %s in new iTerm tab", short(id)),
+			func() error { return wtbridge.OpenITerm(cwd, "claude --resume "+id) },
 		)
 	}
 	return m, m.runWtCmd(
@@ -429,10 +442,10 @@ func (m *model) openNewWt() (tea.Model, tea.Cmd) {
 	// still infer one, leave the cursor on branch so typing works the
 	// same as before. Otherwise focus repo so the missing path is obvious.
 	if strings.TrimSpace(repo) == "" {
-		m.form.focused = 0
+		m.form.focused = fieldRepo
 		m.form.repo.Focus()
 	} else {
-		m.form.focused = 1
+		m.form.focused = fieldBranch
 		m.form.branch.Focus()
 	}
 	return m, textinput.Blink
@@ -487,23 +500,23 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		network := m.form.network
 		if repo == "" {
 			m.form.err = "repo path is required — this workspace is not a git repo"
-			m.focusNewWt(0)
+			m.focusNewWt(fieldRepo)
 			return m, nil
 		}
 		if branch == "" {
 			m.form.err = "branch is required"
-			m.focusNewWt(1)
+			m.focusNewWt(fieldBranch)
 			return m, nil
 		}
 		if !agent.Available() {
 			m.form.err = agent.Bin() + " is not on PATH — install it or pick another agent"
-			m.focusNewWt(3)
+			m.focusNewWt(fieldAgent)
 			return m, nil
 		}
 		top := wtbridge.GitPrimary(repo)
 		if top == "" {
 			m.form.err = "not a git repo: " + repo
-			m.focusNewWt(0)
+			m.focusNewWt(fieldRepo)
 			return m, nil
 		}
 		if base == "" {
@@ -512,15 +525,16 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			base = wtbridge.DefaultBase(top)
 			if base == "" {
 				m.form.err = "could not determine a base branch — type one (e.g. main)"
-				m.focusNewWt(2)
+				m.focusNewWt(fieldBase)
 				return m, nil
 			}
 		}
 		m.form.err = ""
 		m.state = stateList
-		// Codewhale sessions have no Cursor transcript, so the worktree
-		// can only surface as a stub card. Un-hide stubs so the agent the
-		// user just launched is actually visible in the list.
+		// Codewhale and Claude Code sessions have no Cursor transcript, so
+		// the worktree can only surface as a stub card until their own
+		// store has a session. Un-hide stubs so the agent the user just
+		// launched is actually visible in the list.
 		if agent != wtbridge.AgentCursor {
 			m.showEmpty = true
 		}
@@ -539,7 +553,7 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	// The agent, approval and network fields are selectors, not text
 	// inputs: ←/→ (or h/l, space) cycle them instead of typing into them.
-	if m.form.focused == 3 {
+	if m.form.focused == fieldAgent {
 		switch key {
 		case "left", "h":
 			m.form.agent = m.form.agent.Next(-1)
@@ -550,7 +564,7 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.form.focused == 4 {
+	if m.form.focused == fieldApproval {
 		switch key {
 		case "left", "h":
 			m.form.approval = m.form.approval.Next(-1)
@@ -561,7 +575,7 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.form.focused == 5 {
+	if m.form.focused == fieldNetwork {
 		switch key {
 		case "left", "h":
 			m.form.network = m.form.network.Next(-1)
@@ -576,21 +590,26 @@ func (m *model) handleNewWtKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.form.err = ""
 	var cmd tea.Cmd
 	switch m.form.focused {
-	case 0:
+	case fieldRepo:
 		m.form.repo, cmd = m.form.repo.Update(msg)
-	case 1:
+	case fieldBranch:
 		m.form.branch, cmd = m.form.branch.Update(msg)
-	case 2:
+	case fieldBase:
 		m.form.base, cmd = m.form.base.Update(msg)
-	case 6:
+	case fieldBefore:
 		m.form.before, cmd = m.form.before.Update(msg)
-	case 7:
+	case fieldPrompt:
 		m.form.prompt, cmd = m.form.prompt.Update(msg)
 	}
 	return m, cmd
 }
 
 func (m *model) focusNewWt(idx int) {
+	// A hidden row cannot hold focus; step forward to the next visible one
+	// so callers can keep naming a field index unconditionally.
+	for i := 0; i < newWtFields && !m.newWtVisible(idx); i++ {
+		idx = (idx + 1) % newWtFields
+	}
 	m.form.focused = idx
 	m.form.repo.Blur()
 	m.form.branch.Blur()
@@ -598,25 +617,69 @@ func (m *model) focusNewWt(idx int) {
 	m.form.prompt.Blur()
 	m.form.before.Blur()
 	switch idx {
-	case 0:
+	case fieldRepo:
 		m.form.repo.Focus()
-	case 1:
+	case fieldBranch:
 		m.form.branch.Focus()
-	case 2:
+	case fieldBase:
 		m.form.base.Focus()
-	case 6:
+	case fieldBefore:
 		m.form.before.Focus()
-	case 7:
+	case fieldPrompt:
 		m.form.prompt.Focus()
 	}
 }
+
+// Modal field indexes. They are stable even when a row is hidden, so the
+// form's state (approval, network) survives an agent change.
+const (
+	fieldRepo = iota
+	fieldBranch
+	fieldBase
+	fieldAgent
+	fieldApproval
+	fieldNetwork
+	fieldBefore
+	fieldPrompt
+)
 
 // newWtFields is the number of focusable fields in the modal:
 // repo, branch, base, agent, approval, network, before, prompt.
 const newWtFields = 8
 
+// newWtVisible reports whether a row means anything for the agent the
+// modal currently has selected. Showing a control that the launch ignores
+// is worse than hiding it: the operator sets it, and the agent never
+// honours it.
+//
+//   - asks: cursor-agent and claude take a posture flag. Codewhale's dial
+//     lives inside the session and --approval-policy freezes it, so the
+//     dashboard does not offer the row.
+//   - net: only cursor-agent has a sandbox switch. Codewhale is always
+//     launched with danger-full-access and claude has no sandbox flag, so
+//     for both the row would change nothing.
+//   - before: agent-agnostic setup, so it is always offered.
+func (m *model) newWtVisible(idx int) bool {
+	switch idx {
+	case fieldApproval:
+		return m.form.agent != wtbridge.AgentCodewhale
+	case fieldNetwork:
+		return m.form.agent == wtbridge.AgentCursor
+	}
+	return true
+}
+
+// cycleNewWtFocus moves the cursor delta places among visible rows only,
+// so Tab never lands on a hidden one.
 func (m *model) cycleNewWtFocus(delta int) {
-	m.focusNewWt((m.form.focused + delta + newWtFields) % newWtFields)
+	idx := m.form.focused
+	for i := 0; i < newWtFields; i++ {
+		idx = ((idx+delta)%newWtFields + newWtFields) % newWtFields
+		if m.newWtVisible(idx) {
+			break
+		}
+	}
+	m.focusNewWt(idx)
 }
 
 // short returns the first 8 chars of a UUID for compact status messages.

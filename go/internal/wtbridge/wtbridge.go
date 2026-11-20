@@ -56,32 +56,40 @@ func (b *Bridge) Resume(id, cwd string) error {
 }
 
 // Agent identifies which CLI the `n` modal launches inside a fresh
-// worktree. Cursor preserves the historical behavior; Codewhale opens an
-// interactive Codewhale session in the same tab.
+// worktree. Cursor preserves the historical behavior; Claude Code and
+// Codewhale open an interactive session of their own in the same tab.
 type Agent int
 
 const (
 	// AgentCursor launches `cursor-agent`.
 	AgentCursor Agent = iota
+	// AgentClaude launches `claude` (Claude Code).
+	AgentClaude
 	// AgentCodewhale launches `codewhale`, confined to the new worktree.
 	AgentCodewhale
 )
 
 // agents is the launcher order shown in the `n` modal.
-var agents = []Agent{AgentCursor, AgentCodewhale}
+var agents = []Agent{AgentCursor, AgentClaude, AgentCodewhale}
 
 // String is the label rendered in the modal and in status toasts.
 func (a Agent) String() string {
-	if a == AgentCodewhale {
+	switch a {
+	case AgentCodewhale:
 		return "codewhale"
+	case AgentClaude:
+		return "claude"
 	}
 	return "cursor-agent"
 }
 
 // Bin is the executable this agent launches.
 func (a Agent) Bin() string {
-	if a == AgentCodewhale {
+	switch a {
+	case AgentCodewhale:
 		return "codewhale"
+	case AgentClaude:
+		return "claude"
 	}
 	return "cursor-agent"
 }
@@ -303,6 +311,33 @@ func (a Agent) LaunchCommand(prompt string, approval Approval) string {
 //	never       cursor-agent --yolo
 //	untrusted   cursor-agent (default)
 //
+// Claude Code takes the posture as a flag too, and every value below is
+// spelled from the enum the installed CLI prints for --permission-mode
+// (acceptEdits, auto, bypassPermissions, manual, dontAsk, plan; verified
+// against 2.1.329).
+//
+// The default row must be pinned rather than left implicit. Claude Code
+// 2.1.x starts in `auto` mode, where its own classifier decides whether a
+// tool call is risky — the opposite of "ask before acting". A bare
+// `claude` would therefore make the on-request label a lie. Pinning is
+// safe because the flag sets only the starting mode: inside the session
+// Shift+Tab still cycles manual → accept edits → plan → auto (observed),
+// which is exactly what the dashboard wants the human to be able to do.
+// That is the difference from codewhale, whose --approval-policy becomes
+// the controlling source and freezes its dial.
+//
+// untrusted maps to dontAsk: Claude Code denies anything that is not
+// already pre-approved, which is the strictest posture it offers.
+//
+// Claude Code has no sandbox switch at all: every launch has the whole
+// filesystem and the network, so the `net:` row deliberately does not
+// appear in its command line.
+//
+//	on-request  claude --permission-mode manual
+//	auto        claude --permission-mode auto
+//	never       claude --dangerously-skip-permissions
+//	untrusted   claude --permission-mode dontAsk
+//
 // cursor-agent takes --sandbox enabled|disabled. When the posture is off,
 // cursor-agent gets no flag at all — its effective default is whatever its
 // config says, and adding `--sandbox enabled` would change behaviour for
@@ -313,6 +348,18 @@ func (a Agent) LaunchCommandWith(prompt string, approval Approval, network Netwo
 	switch a {
 	case AgentCodewhale:
 		cmd = "codewhale --sandbox-mode danger-full-access --skip-onboarding --fresh"
+	case AgentClaude:
+		cmd = "claude"
+		switch approval {
+		case ApprovalOnRequest:
+			cmd += " --permission-mode manual"
+		case ApprovalAuto:
+			cmd += " --permission-mode auto"
+		case ApprovalNever:
+			cmd += " --dangerously-skip-permissions"
+		case ApprovalUntrusted:
+			cmd += " --permission-mode dontAsk"
+		}
 	default:
 		switch approval {
 		case ApprovalAuto:

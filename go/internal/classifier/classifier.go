@@ -28,18 +28,25 @@ type View interface {
 // trustsLiveProcess reports whether a live process is stronger evidence
 // than the transcript clock.
 //
-// For Codewhale it is, and the reason is mechanical rather than stylistic:
-// a session counts as live only when a codewhale process holds its
-// live-marker file descriptor open, which a dead session cannot do. The
-// log, meanwhile, is rewritten per turn, so its mtime lags real work by
-// however long the current turn's tools take. Deferring to the clock
-// there produces the worst kind of wrong answer — an agent running a
-// long command shows IDLE.
+// For Codewhale and Claude Code it is, and the reason is mechanical
+// rather than stylistic: both write one record per event, so their log
+// mtime lags real work by however long the current turn's tools take.
+// Codewhale counts as live only while a process holds its live-marker
+// file descriptor open, which a dead session cannot do. Claude Code
+// writes the assistant message (with its tool_use blocks) before the
+// tools run and the tool result after each one finishes, so a live
+// process with a tool-call tail is a session waiting on that tool.
+// Deferring to the clock there produces the worst kind of wrong answer —
+// an agent running a long build shows IDLE.
 //
 // Cursor keeps the clock rule: its pids can idle without recording
 // anything, so a stale transcript there means an idle chat.
 func trustsLiveProcess(s session.Session) bool {
-	return s.Source == session.SourceCodewhale
+	switch s.Source {
+	case session.SourceCodewhale, session.SourceClaude:
+		return true
+	}
+	return false
 }
 
 // Classify returns the visible state for a session given the current

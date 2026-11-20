@@ -28,8 +28,11 @@ func writeCodewhaleLog(t *testing.T, dir, id string, lines ...string) string {
 func newCodewhaleScanner(t *testing.T, projectsDir, codewhaleDir string) *Scanner {
 	t.Helper()
 	return New(Options{
-		ProjectsDir:   projectsDir,
-		CodewhaleDir:  codewhaleDir,
+		ProjectsDir:  projectsDir,
+		CodewhaleDir: codewhaleDir,
+		// Keep the suite hermetic: without this, a machine with Claude
+		// Code installed would mix real transcripts into these counts.
+		ClaudeDir:     filepath.Join(t.TempDir(), "no-claude"),
 		IdleThreshold: 20 * time.Minute,
 		MaxCards:      50,
 	})

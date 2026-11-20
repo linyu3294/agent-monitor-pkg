@@ -1,13 +1,14 @@
-// Package proctable resolves chat ids to user-facing cursor-agent
-// processes. The mapping is built once per refresh tick by:
+// Package proctable resolves session ids to user-facing agent
+// processes. The mapping is built once per refresh tick by
 //
 //  1. Listing all processes with `ps -Awwo pid,state,command`.
-//  2. Keeping pids whose command line looks like a cursor-agent.
+//  2. Keeping pids whose command line looks like a cursor-agent,
+//     codewhale, or claude process.
 //  3. For each candidate pid, looking up open files with `lsof` and
-//     extracting the chat id from
+//     extracting the session id: Cursor through
 //     `~/.cursor/chats/<projectHash>/<chatId>/store.db` (which the
 //     user-facing cursor-agent keeps open for-write while the chat is
-//     live).
+//     live), Codewhale through its open session log or live marker.
 //
 // The lookup in step 3 is done with a single bulk `lsof -p p1,p2,…`
 // invocation rather than per-pid, which is the main speedup over the
@@ -20,6 +21,8 @@
 //
 // Codewhale sessions have no equivalent open file; they are bound
 // through their runtime ownership record instead. See codewhale.go.
+// Claude Code holds nothing open at all, so it is bound through the
+// process's working directory; see claude.go.
 package proctable
 
 import (
@@ -29,10 +32,11 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
-// Process represents one live user-facing agent process (Cursor or
-// Codewhale).
+// Process represents one live user-facing agent process (Cursor,
+// Codewhale, or Claude Code).
 type Process struct {
 	PID       int
 	State     byte // ps stat letter: 'R' running, 'S' sleeping, 'T' stopped
@@ -43,6 +47,13 @@ type Process struct {
 type Table struct {
 	byChat       map[string]Process
 	codewhaleDir string
+	claudeDir    string
+	// claudeProcs are live Claude Code processes with the directory each
+	// runs in. Claude Code holds no session file descriptor, so its
+	// process binds to a session by workspace instead of by open file;
+	// the join happens in BindClaudeSessions once the scan knows which
+	// session belongs to which directory.
+	claudeProcs []claudeProc
 }
 
 // New returns an empty table. Call Refresh before reading.
@@ -50,6 +61,7 @@ func New() *Table {
 	return &Table{
 		byChat:       make(map[string]Process),
 		codewhaleDir: defaultCodewhaleDir(),
+		claudeDir:    defaultClaudeDir(),
 	}
 }
 
@@ -57,18 +69,78 @@ func New() *Table {
 type agentProc struct {
 	pid       int
 	state     byte
+	started   time.Time
 	wtManager bool
 	codewhale bool
+	claude    bool
+}
+
+// parseElapsed converts macOS ps `etime` output into a duration. The
+// observed shapes are "MM:SS", "HH:MM:SS", and "D-HH:MM:SS"; an
+// unparseable value yields 0, which the caller treats as "start time
+// unknown" rather than inventing one.
+func parseElapsed(s string) time.Duration {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	var days int
+	if i := strings.IndexByte(s, '-'); i >= 0 {
+		n, err := strconv.Atoi(s[:i])
+		if err != nil {
+			return 0
+		}
+		days = n
+		s = s[i+1:]
+	}
+	parts := strings.Split(s, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return 0
+	}
+	var nums [3]int
+	offset := len(nums) - len(parts)
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return 0
+		}
+		nums[offset+i] = n
+	}
+	return time.Duration(days)*24*time.Hour +
+		time.Duration(nums[0])*time.Hour +
+		time.Duration(nums[1])*time.Minute +
+		time.Duration(nums[2])*time.Second
+}
+
+// cutField splits the leading whitespace-delimited field off line and
+// returns it with the remainder trimmed of leading spaces.
+func cutField(line []byte) (field, rest []byte, ok bool) {
+	line = bytes.TrimLeft(line, " \t")
+	if len(line) == 0 {
+		return nil, nil, false
+	}
+	if i := bytes.IndexByte(line, ' '); i >= 0 {
+		return line[:i], bytes.TrimLeft(line[i+1:], " "), true
+	}
+	if i := bytes.IndexByte(line, '\t'); i >= 0 {
+		return line[:i], bytes.TrimLeft(line[i+1:], " \t"), true
+	}
+	return line, nil, true
 }
 
 // Refresh rebuilds the chat → process mapping. Cheap enough to call once
 // per tick (~25ms on a busy machine).
 func (t *Table) Refresh() {
 	t.byChat = map[string]Process{}
+	t.claudeProcs = nil
 
-	// Step 1: ps. We want pid, state, command. macOS ps `state` is the
-	// canonical single-letter status (R/S/T/Z/...).
-	psOut, err := exec.Command("ps", "-Awwo", "pid=,state=,command=").Output()
+	// Step 1: ps. We want pid, state, elapsed time, command. macOS ps
+	// `state` is the canonical single-letter status (R/S/T/Z/...);
+	// `etime` is the process's age, which Claude Code's liveness join
+	// needs to tell a live session from a finished one in the same
+	// directory (see BindClaudeSessions).
+	snapshotAt := time.Now()
+	psOut, err := exec.Command("ps", "-Awwo", "pid=,state=,etime=,command=").Output()
 	if err != nil {
 		// Restricted or sandboxed environments can deny ps while still
 		// allowing lsof. Codewhale sessions remain discoverable without
@@ -86,38 +158,42 @@ func (t *Table) Refresh() {
 		if len(line) == 0 {
 			continue
 		}
-		// "<pid> <state> <cmdline>"
-		var pidStr string
-		idx := bytes.IndexByte(line, ' ')
-		if idx <= 0 {
+		// "<pid> <state> <etime> <cmdline>". The command is the rest of
+		// the line because it contains spaces; the three fields before it
+		// do not, so a token walk is exact.
+		pidStr, rest, ok := cutField(line)
+		if !ok {
 			continue
 		}
-		pidStr = string(line[:idx])
-		rest := bytes.TrimLeft(line[idx+1:], " ")
-		if len(rest) == 0 {
+		stateStr, rest, ok := cutField(rest)
+		if !ok || len(stateStr) == 0 {
 			continue
 		}
-		state := rest[0]
 		// state can be e.g. "S+", we just want the first letter.
-		idx2 := bytes.IndexByte(rest, ' ')
-		if idx2 < 0 {
+		state := stateStr[0]
+		etime, cmd, ok := cutField(rest)
+		if !ok {
 			continue
 		}
-		cmd := bytes.TrimLeft(rest[idx2+1:], " ")
-		pid, err := strconv.Atoi(pidStr)
+		pid, err := strconv.Atoi(string(pidStr))
 		if err != nil {
 			continue
 		}
+		started := snapshotAt.Add(-parseElapsed(string(etime)))
 		if looksLikeCodewhale(cmd) {
 			liveCodewhale[pid] = state
-			procs = append(procs, agentProc{pid: pid, state: state, codewhale: true})
+			procs = append(procs, agentProc{pid: pid, state: state, started: started, codewhale: true})
+			continue
+		}
+		if looksLikeClaude(cmd) {
+			procs = append(procs, agentProc{pid: pid, state: state, started: started, claude: true})
 			continue
 		}
 		if !looksLikeCursorAgent(cmd) {
 			continue
 		}
 		isWtm := bytes.Contains(cmd, []byte("agent-monitor wt-manager"))
-		procs = append(procs, agentProc{pid: pid, state: state, wtManager: isWtm})
+		procs = append(procs, agentProc{pid: pid, state: state, started: started, wtManager: isWtm})
 	}
 
 	if len(procs) == 0 {
@@ -176,6 +252,26 @@ func (t *Table) bindFromLsof(lsofOut []byte, pidIndex map[int]agentProc) {
 		}
 		name := string(fields[len(fields)-1])
 
+		if proc.claude {
+			// Claude Code normally holds no session file. When it does hold
+			// one open, that path names the session exactly, so bind it and
+			// mark the process so the workspace join leaves it alone.
+			if id := t.claudeID(name); id != "" {
+				if _, taken := t.byChat[id]; !taken {
+					t.byChat[id] = Process{PID: pid, State: proc.state}
+					t.markClaudeExact(pid, proc.state, proc.started)
+				}
+				continue
+			}
+			// Otherwise the durable signal is the process's own working
+			// directory. lsof reports it as the `cwd` descriptor of every
+			// process it is given, which rides along in this same call.
+			if bytes.Equal(fields[3], []byte("cwd")) {
+				t.setClaudeCwd(pid, proc.state, proc.started, name)
+			}
+			continue
+		}
+
 		if proc.codewhale {
 			if id := codewhaleIDFromOpenPath(name, t.codewhaleDir); id != "" {
 				t.byChat[id] = Process{PID: pid, State: proc.state}
@@ -225,6 +321,22 @@ func looksLikeCursorAgent(cmd []byte) bool {
 		return true
 	}
 	return false
+}
+
+// argv0 returns the first whitespace-separated token of a command line.
+func argv0(cmd []byte) []byte {
+	if i := bytes.IndexByte(cmd, ' '); i >= 0 {
+		return cmd[:i]
+	}
+	return cmd
+}
+
+// baseName returns the last path element of p.
+func baseName(p []byte) []byte {
+	if i := bytes.LastIndexByte(p, '/'); i >= 0 {
+		return p[i+1:]
+	}
+	return p
 }
 
 // IsLive reports whether a user-facing cursor-agent currently holds the

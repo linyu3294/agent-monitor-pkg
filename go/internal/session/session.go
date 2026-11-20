@@ -1,7 +1,8 @@
-// Package session models a Cursor agent transcript and the metadata derived
-// from its on-disk location.
+// Package session models an agent session and the metadata derived from
+// its on-disk location: a Cursor transcript, a Claude Code transcript, or
+// a Codewhale session log.
 //
-// A Session is uniquely identified by its chat id (UUID v4). Cursor stores
+// A Session is uniquely identified by its chat/session id (UUID v4). Cursor stores
 // transcripts at:
 //
 //	$HOME/.cursor/projects/<encoded>/agent-transcripts/<chatId>/<chatId>.jsonl
@@ -41,12 +42,17 @@ const (
 	SourceCursor Source = "cursor"
 	// SourceCodewhale is a Codewhale session log under ~/.codewhale/sessions.
 	SourceCodewhale Source = "codewhale"
+	// SourceClaude is a Claude Code transcript under ~/.claude/projects.
+	SourceClaude Source = "claude"
 )
 
 // AgentLabel is the short CLI name rendered on a card.
 func (s Session) AgentLabel() string {
-	if s.Source == SourceCodewhale {
+	switch s.Source {
+	case SourceCodewhale:
 		return "codewhale"
+	case SourceClaude:
+		return "claude"
 	}
 	return "cursor"
 }
@@ -54,8 +60,11 @@ func (s Session) AgentLabel() string {
 // ResumeCommand is the shell line that reattaches to this session in a
 // fresh terminal. Mirrors the `cmd:` row on each card.
 func (s Session) ResumeCommand() string {
-	if s.Source == SourceCodewhale {
+	switch s.Source {
+	case SourceCodewhale:
 		return "codewhale resume " + s.ID
+	case SourceClaude:
+		return "claude --resume " + s.ID
 	}
 	return "cursor-agent --resume " + s.ID
 }

@@ -290,17 +290,27 @@ cmd_list() {
   "$AM_BINARY" --list
 }
 
-# Find the JSONL transcript for a chat id by walking the projects dir.
-# Used by `am follow` so the bottom pane can tail the file directly.
+# Find the JSONL transcript for a session id across both JSONL stores:
+# Cursor (${AM_PROJECTS_DIR:-~/.cursor/projects}/.../agent-transcripts/<id>/<id>.jsonl)
+# and Claude Code (~/.claude/projects/<project>/<id>.jsonl). Used by
+# `am follow` so the bottom pane can tail the file directly.
 find_transcript_for_id() {
-  local id="$1" match
-  match="$(find "$HOME/.cursor/projects" \
+  local id="$1" match=""
+  match="$( { find "${AM_PROJECTS_DIR:-$HOME/.cursor/projects}" \
       -maxdepth 4 \
       -type f \
       -name "${id}.jsonl" \
       -path '*/agent-transcripts/*' \
-      2>/dev/null | head -n 1)"
+      2>/dev/null | head -n 1; } || true )"
+  if [[ -z "$match" ]]; then
+    match="$( { find "${AM_CLAUDE_DIR:-$HOME/.claude/projects}" \
+        -maxdepth 2 \
+        -type f \
+        -name "${id}.jsonl" \
+        2>/dev/null | head -n 1; } || true )"
+  fi
   [[ -n "$match" ]] && printf '%s\n' "$match"
+  return 0
 }
 
 cmd_follow() {
@@ -323,7 +333,28 @@ cmd_follow() {
 cmd_resume() {
   local id="${1:-}"
   [[ -n "$id" ]] || { echo "usage: am resume <chatId>" >&2; exit 2; }
-  local bottom_cmd="cursor-agent --resume '$id'"
+  # A chat id lives in exactly one store, and each CLI resumes its own
+  # sessions: cursor-agent --resume, claude --resume, codewhale resume.
+  local transcript resume_cmd="cursor-agent --resume" cwd=""
+  transcript="$(find_transcript_for_id "$id")"
+  case "$transcript" in
+    */.claude/projects/*) resume_cmd="claude --resume" ;;
+  esac
+  if [[ -z "$transcript" && -f "${AM_CODEWHALE_DIR:-$HOME/.codewhale/sessions}/$id.json" ]]; then
+    resume_cmd="codewhale resume"
+  fi
+  # Claude Code resolves --resume against the project it is started in, so
+  # the pane must start where the transcript says the session ran. Cursor
+  # looks the id up globally; the cd is harmless there.
+  if [[ -n "$transcript" ]]; then
+    cwd="$(head -n 20 "$transcript" 2>/dev/null \
+      | jq -r 'select(.cwd != null and .cwd != "") | .cwd' 2>/dev/null \
+      | head -n 1)"
+  fi
+  local bottom_cmd="$resume_cmd '$id'"
+  if [[ -n "$cwd" && -d "$cwd" ]]; then
+    bottom_cmd="cd $(printf '%q' "$cwd") && $bottom_cmd"
+  fi
   if session_exists; then
     tmux respawn-pane -k -t "$AM_TMUX_SESSION:0.1" "$bottom_cmd"
   else
@@ -391,15 +422,15 @@ cmd_update() {
 
 cmd_help() {
   cat <<EOF
-am — agent-monitor: live dashboard for Cursor agent sessions
+am — agent-monitor: live dashboard for Cursor / Claude Code / Codewhale sessions
 
 Usage:
   am                    start or attach the dashboard
   am attach             attach an existing session (error if none)
   am detach             detach current tmux client (keeps dashboard running)
   am list               print active sessions + resume commands (no TUI)
-  am follow <chatId>    open dashboard with bottom pane live-tailing that session
-  am resume <chatId>    open dashboard with bottom pane running 'cursor-agent --resume <id>'
+  am follow <chatId>    open dashboard with bottom pane live-tailing that session (Cursor / Claude)
+  am resume <chatId>    open dashboard with bottom pane resuming that session (agent auto-detected)
   am kill               kill the dashboard's tmux session (monitored agents unaffected)
   am rebuild            rebuild the Go binary from source (requires go on PATH)
   am restart            bounce the dashboard pane (leave wt-manager untouched)
@@ -411,6 +442,9 @@ Env vars:
   AM_REFRESH_MS         dashboard tick (ms), default: 2000
   AM_IDLE_THRESHOLD_MIN hide sessions idle longer than this (min), default: 20
   AM_MAX_CARDS          max cards rendered, default: 50
+  AM_PROJECTS_DIR       override the Cursor projects dir (default: ~/.cursor/projects)
+  AM_CLAUDE_DIR         override the Claude Code projects dir (default: ~/.claude/projects)
+  AM_CODEWHALE_DIR      override the Codewhale session store (default: ~/.codewhale/sessions)
   AM_WT_BIN             override the wt CLI path (default: ~/.claude/skills/worktrees/scripts/wt)
 EOF
 }
