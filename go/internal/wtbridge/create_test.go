@@ -118,25 +118,28 @@ func TestLaunchCommand(t *testing.T) {
 			"codewhale prompt", AgentCodewhale, ApprovalNever, "it's broken",
 			`codewhale --sandbox-mode danger-full-access --skip-onboarding --fresh -- 'it'\''s broken'`,
 		},
+		// Claude Code 2.1.x defaults to auto mode, so on-request must be
+		// pinned explicitly or the label would promise prompts it does not
+		// produce.
 		{
 			"claude asks by default", AgentClaude, ApprovalOnRequest, "",
-			"claude",
+			"claude --permission-mode manual",
 		},
 		{
-			"claude auto accepts edits", AgentClaude, ApprovalAuto, "",
-			"claude --permission-mode acceptEdits",
+			"claude auto keeps the guardian", AgentClaude, ApprovalAuto, "",
+			"claude --permission-mode auto",
 		},
 		{
 			"claude never skips permissions", AgentClaude, ApprovalNever, "",
 			"claude --dangerously-skip-permissions",
 		},
 		{
-			"claude untrusted is its default", AgentClaude, ApprovalUntrusted, "",
-			"claude",
+			"claude untrusted denies unapproved calls", AgentClaude, ApprovalUntrusted, "",
+			"claude --permission-mode dontAsk",
 		},
 		{
 			"claude prompt", AgentClaude, ApprovalOnRequest, "fix it",
-			`claude -- 'fix it'`,
+			`claude --permission-mode manual -- 'fix it'`,
 		},
 	}
 	for _, tc := range tests {
@@ -220,6 +223,44 @@ func TestAgentNextWraps(t *testing.T) {
 	}
 	if got := AgentClaude.Next(-1); got != AgentCursor {
 		t.Fatalf("claude.Next(-1) = %v, want cursor", got)
+	}
+}
+
+// TestClaudePermissionModesAcceptedByCLI validates the launch flags
+// against the installed binary instead of against our own assumptions.
+//
+// Claude Code validates --permission-mode before it does anything else, so
+// a prompt with an invalid mode fails with the accepted enum and never
+// reaches the API. That makes this a safe, offline check.
+//
+// The default row is the one that matters most: 2.1.x starts in `auto`, so
+// a launch that forgot the flag would silently stop asking the human.
+// Skipped when claude is not installed.
+func TestClaudePermissionModesAcceptedByCLI(t *testing.T) {
+	bin, err := exec.LookPath("claude")
+	if err != nil {
+		t.Skip("claude not on PATH")
+	}
+	for _, a := range approvals {
+		a := a
+		t.Run(a.String(), func(t *testing.T) {
+			// No prompt, so the launch line contains no quoted values
+			// and Fields recovers the exact argv.
+			launch := strings.Fields(AgentClaude.LaunchCommand("", a))
+			args := append([]string{"-p", "reply with one word"}, launch[1:]...)
+			probe := exec.Command(bin, args...)
+			probe.Dir = t.TempDir()
+			out, err := probe.CombinedOutput()
+			if strings.Contains(string(out), "is invalid") {
+				t.Fatalf("claude rejects the launch %v:\n%s", launch, out)
+			}
+			if strings.Contains(string(out), "Not logged in") {
+				t.Skip("claude is not authenticated; flag validation needs a login")
+			}
+			if err != nil {
+				t.Fatalf("claude launch %v failed: %v\n%s", launch, err, out)
+			}
+		})
 	}
 }
 
@@ -345,7 +386,7 @@ func TestLaunchCommandNetwork(t *testing.T) {
 		// cannot keep.
 		{
 			"claude ignores the network row", AgentClaude, ApprovalAuto, NetworkOn,
-			"claude --permission-mode acceptEdits",
+			"claude --permission-mode auto",
 		},
 	}
 	for _, tc := range tests {

@@ -53,7 +53,7 @@ Re-run `install.sh` any time — it's idempotent.
 | `y` | copy chat id to clipboard |
 | `o` | open worktree in Cursor |
 | `i` | open nvim + Diffview iTerm tab |
-| `n` | new worktree (modal: repo / branch / base / agent / approval / net / before / prompt) |
+| `n` | new worktree (modal: repo / branch / base / agent / before / prompt, plus `asks` and `net` where the selected agent honours them) |
 | `r` | kill agent (and remove worktree if attached) |
 | `s` | sync — rebase the worktree onto its base |
 | `x` | pause / resume the selected agent (`SIGSTOP` / `SIGCONT`) |
@@ -75,6 +75,12 @@ Selecting `claude` starts Claude Code in the new tab with your prompt
 tabs start as login shells, so a key exported in `~/.bash_profile` is read by it;
 if your shell does not read that file, export the key where it does, or pass it in
 the `before:` command.
+
+The modal shows only the rows the selected agent can act on: `asks:` for
+cursor-agent and Claude Code, `net:` for cursor-agent alone, and `before:` for
+all three. Codewhale gets neither `asks` nor `net` — its dial lives inside the
+session and it is always unsandboxed — and Claude Code has no sandbox switch, so
+`net:` would change nothing there.
 
 The `asks:` field is the approval posture for **cursor-agent and Claude Code**,
 and **it is yours to choose** — the dashboard never switches it for you. It
@@ -173,6 +179,9 @@ The workspace for a Codewhale card is read from the log's own metadata when it s
 Claude Code keeps no file descriptor tied to a session, so liveness is bound by workspace: a `claude` process whose working directory matches the session's workspace is that session. If a process does hold its own transcript open, that file names the session exactly and wins over the workspace guess. Otherwise the join only accepts a transcript written at or after the process started, and refuses when more than one qualifies — two live agents in one directory, or a finished batch session alongside the live one. An unbound card loses its `ACTIVE` state; `x` and `r` can never signal a process the card does not name.
 
 This is a fully read-only view of the agent runtime — the dashboard never opens a log in full, never touches an agent's sockets, and never blocks on I/O. Agents detach from their parent terminal, so closing the terminal that started one doesn't kill it; `am` just gives you visibility back from any new terminal.
+
+Every card names its agent (`cursor`, `claude`, or `codewhale`) next to the
+project name, so a mixed dashboard stays readable at a glance.
 
 A card's `cmd:` row names the CLI that resumes it (`cursor-agent --resume <id>`, `claude --resume <id>`, or `codewhale resume <id>`), and `am list` reports that `SOURCE` per row. `f` (follow) works for Cursor and Claude Code transcripts; on a Codewhale card it points you at `a` instead of tailing the wrong file.
 

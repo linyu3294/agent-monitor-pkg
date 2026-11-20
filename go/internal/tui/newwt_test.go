@@ -250,6 +250,10 @@ func run(t *testing.T, dir string, name string, args ...string) {
 // TestNewWorktreeApprovalDefaultsToAsk is the regression guard for the
 // launch posture: a new agent must ask the user before acting, and only
 // run unattended if the user explicitly selects it.
+//
+// It also pins which rows each agent is offered: codewhale has no asks or
+// net row (its dial is in-session and it is always unsandboxed), claude
+// has asks but no net row, and cursor-agent has both.
 func TestNewWorktreeApprovalDefaultsToAsk(t *testing.T) {
 	stubDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stubDir, "codewhale"), []byte("#!/bin/sh\n"), 0o755); err != nil {
@@ -263,6 +267,9 @@ func TestNewWorktreeApprovalDefaultsToAsk(t *testing.T) {
 	mdl, _ = mdl.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	mm := mdl.(*model)
 
+	if mm.form.agent != wtbridge.AgentCodewhale {
+		t.Fatalf("default agent = %v, want codewhale", mm.form.agent)
+	}
 	if mm.form.approval != wtbridge.ApprovalOnRequest {
 		t.Fatalf("default approval = %v, want on-request", mm.form.approval)
 	}
@@ -270,17 +277,64 @@ func TestNewWorktreeApprovalDefaultsToAsk(t *testing.T) {
 	if testing.Verbose() {
 		t.Logf("modal:\n%s", view)
 	}
-	if !strings.Contains(view, "on-request") {
-		t.Fatalf("modal does not show the approval row:\n%s", view)
+	// Codewhale ignores both rows, so neither is offered.
+	if strings.Contains(view, "asks:") {
+		t.Fatalf("codewhale modal offers an asks row it cannot honour:\n%s", view)
+	}
+	if strings.Contains(view, "net:") {
+		t.Fatalf("codewhale modal offers a net row it cannot honour:\n%s", view)
+	}
+	if !strings.Contains(view, "Shift+Tab") {
+		t.Fatalf("codewhale modal does not explain the permission dial:\n%s", view)
 	}
 	if strings.Contains(view, "will not stop to ask you") {
 		t.Fatal("modal warns about unattended mode before it was selected")
+	}
+	cwCmd := mm.form.agent.LaunchCommand("", mm.form.approval)
+	if strings.Contains(cwCmd, "--approval-policy") {
+		t.Fatalf("launch command pins the permission dial: %q", cwCmd)
+	}
+	if !strings.Contains(cwCmd, "--sandbox-mode danger-full-access") {
+		t.Fatalf("launch command = %q, want the sandbox off", cwCmd)
+	}
+
+	// Move to the agent row. The cycle is cursor → claude → codewhale, so
+	// one step right from codewhale wraps to cursor-agent: the only agent
+	// with a sandbox switch, so both rows are offered.
+	for i := 0; mm.form.focused != fieldAgent; i++ {
+		if i > newWtFields {
+			t.Fatalf("never reached the agent row (focused = %d)", mm.form.focused)
+		}
+		mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyTab})
+		mm = mdl.(*model)
+	}
+	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRight})
+	mm = mdl.(*model)
+	if mm.form.agent != wtbridge.AgentCursor {
+		t.Fatalf("agent after → = %v, want cursor", mm.form.agent)
+	}
+	if !strings.Contains(mm.View(), "asks:") || !strings.Contains(mm.View(), "net:") {
+		t.Fatalf("cursor modal is missing asks/net:\n%s", mm.View())
+	}
+
+	// One more step is claude: asks appears, net does not, because claude
+	// has no sandbox switch to turn off.
+	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRight})
+	mm = mdl.(*model)
+	if mm.form.agent != wtbridge.AgentClaude {
+		t.Fatalf("agent after →→ = %v, want claude", mm.form.agent)
+	}
+	if !strings.Contains(mm.View(), "asks:") {
+		t.Fatalf("claude modal is missing the asks row:\n%s", mm.View())
+	}
+	if strings.Contains(mm.View(), "net:") {
+		t.Fatalf("claude modal offers a net row it cannot honour:\n%s", mm.View())
 	}
 
 	// Tab until the approval row has focus. The starting field depends on
 	// whether a repo could be inferred from the selected card, so the
 	// test must not hardcode it.
-	for i := 0; mm.form.focused != 4; i++ {
+	for i := 0; mm.form.focused != fieldApproval; i++ {
 		if i > newWtFields {
 			t.Fatalf("never reached the approval row (focused = %d)", mm.form.focused)
 		}
@@ -295,53 +349,66 @@ func TestNewWorktreeApprovalDefaultsToAsk(t *testing.T) {
 	if !strings.Contains(mm.View(), "auto") {
 		t.Fatalf("modal does not render the auto posture:\n%s", mm.View())
 	}
-	if testing.Verbose() {
-		t.Logf("auto:\n%s", mm.View())
-	}
 	if strings.Contains(mm.View(), "will not stop to ask you") {
 		t.Fatal("auto must not carry the unattended warning")
 	}
-	if !strings.Contains(mm.View(), "Shift+Tab") {
-		t.Fatalf("codewhale modal does not explain the permission dial:\n%s", mm.View())
-	}
 
-	// One more step is the unattended posture. Codewhale does not pin it:
-	// --approval-policy locks Shift+Tab, so the warning stays with cursor-agent.
+	// One more step is the unattended posture, which must warn.
 	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRight})
 	mm = mdl.(*model)
 	if mm.form.approval != wtbridge.ApprovalNever {
 		t.Fatalf("approval after →→ = %v, want never", mm.form.approval)
 	}
-	if strings.Contains(mm.View(), "will not stop to ask you") {
-		t.Fatalf("codewhale modal warned about a posture it does not pin:\n%s", mm.View())
+	if !strings.Contains(mm.View(), "will not stop to ask you") {
+		t.Fatalf("no warning after choosing unattended:\n%s", mm.View())
 	}
+	// claude is the selected agent at this point, and its unattended
+	// posture is the explicit bypass flag.
+	launch := mm.form.agent.LaunchCommand("", mm.form.approval)
+	if !strings.Contains(launch, "--dangerously-skip-permissions") {
+		t.Fatalf("claude launch = %q, want the bypass flag", launch)
+	}
+}
 
-	cmd := mm.form.agent.LaunchCommand("", mm.form.approval)
-	if strings.Contains(cmd, "--approval-policy") {
-		t.Fatalf("launch command pins the permission dial: %q", cmd)
+// Tab must skip the rows the selected agent does not get, so focus never
+// lands on a control that is not on screen.
+func TestNewWtTabSkipsHiddenRows(t *testing.T) {
+	stubDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stubDir, "codewhale"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(cmd, "--sandbox-mode danger-full-access") {
-		t.Fatalf("launch command = %q, want the sandbox off", cmd)
-	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("AM_WT_BIN", filepath.Join(t.TempDir(), "missing-wt"))
 
-	for i := 0; mm.form.focused != 3; i++ {
-		if i > newWtFields {
-			t.Fatalf("never reached the agent row (focused = %d)", mm.form.focused)
+	m := New(Options{RefreshInterval: time.Second, IdleThreshold: time.Hour, MaxCards: 10}, "test")
+	var mdl tea.Model = m
+	mdl, _ = mdl.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	mdl, _ = mdl.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	mm := mdl.(*model)
+
+	// Walk the whole cycle with codewhale selected: asks and net must never
+	// receive focus.
+	for i := 0; i < newWtFields*2; i++ {
+		if !mm.newWtVisible(mm.form.focused) {
+			t.Fatalf("focus landed on a hidden row (%d)", mm.form.focused)
 		}
-		mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+		mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyTab})
 		mm = mdl.(*model)
 	}
-	mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyRight})
-	mm = mdl.(*model)
-	if mm.form.agent != wtbridge.AgentCursor {
-		t.Fatalf("agent after → = %v, want cursor", mm.form.agent)
+
+	// Same walk with cursor-agent selected: every row is offered, so the
+	// cycle must include asks and net.
+	mm.form.agent = wtbridge.AgentCursor
+	seen := map[int]bool{}
+	for i := 0; i < newWtFields; i++ {
+		seen[mm.form.focused] = true
+		mdl, _ = mm.Update(tea.KeyMsg{Type: tea.KeyTab})
+		mm = mdl.(*model)
 	}
-	if !strings.Contains(mm.View(), "will not stop to ask you") {
-		t.Fatalf("no warning after choosing unattended for cursor-agent:\n%s", mm.View())
-	}
-	cursorCmd := mm.form.agent.LaunchCommand("", mm.form.approval)
-	if !strings.Contains(cursorCmd, "--yolo") {
-		t.Fatalf("cursor launch = %q, want --yolo", cursorCmd)
+	for _, want := range []int{fieldApproval, fieldNetwork, fieldBefore} {
+		if !seen[want] {
+			t.Fatalf("cursor cycle skipped field %d: %v", want, seen)
+		}
 	}
 }
 
@@ -435,6 +502,8 @@ func TestNewWorktreeUsesConfiguredDefaults(t *testing.T) {
 	if mm.form.network != wtbridge.NetworkOn {
 		t.Fatalf("network = %v, want on", mm.form.network)
 	}
+	// The egress warning belongs to the agent that has a sandbox switch.
+	mm.form.agent = wtbridge.AgentCursor
 	if got := mm.form.before.Value(); got != "aws sso login --profile bora" {
 		t.Fatalf("before = %q, want the configured default", got)
 	}
@@ -486,6 +555,9 @@ func TestNewWorktreeNetworkDefaultsOffAndWarns(t *testing.T) {
 	if mm.form.network != wtbridge.NetworkOff {
 		t.Fatalf("default network = %v, want off", mm.form.network)
 	}
+	// net: is a cursor-agent row; the host may default the modal to
+	// codewhale or claude, where the row is deliberately absent.
+	mm.form.agent = wtbridge.AgentCursor
 	if view := mm.View(); !strings.Contains(view, "net:") || !strings.Contains(view, "workspace-write") {
 		t.Fatalf("modal does not render the confined net row:\n%s", view)
 	}
@@ -495,7 +567,7 @@ func TestNewWorktreeNetworkDefaultsOffAndWarns(t *testing.T) {
 
 	// Tab until the net row has focus; the entry point depends on whether a
 	// repo could be inferred from the selected card.
-	for i := 0; mm.form.focused != 5; i++ {
+	for i := 0; mm.form.focused != fieldNetwork; i++ {
 		if i > newWtFields {
 			t.Fatalf("never reached the net row (focused = %d)", mm.form.focused)
 		}

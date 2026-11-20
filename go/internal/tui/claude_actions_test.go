@@ -192,8 +192,8 @@ func TestNewWorktreeLaunchesClaude(t *testing.T) {
 	// default depends on the host, and TestDefaultAgentPrefersClaude
 	// covers that separately.
 	mm.form.agent = wtbridge.AgentClaude
-	if !strings.Contains(mm.View(), "always runs unsandboxed") {
-		t.Fatalf("modal does not explain claude's sandbox posture:\n%s", mm.View())
+	if !strings.Contains(mm.View(), "has no sandbox switch") {
+		t.Fatalf("modal does not explain claude's missing net row:\n%s", mm.View())
 	}
 
 	mm.form.branch.SetValue("feature-claude")

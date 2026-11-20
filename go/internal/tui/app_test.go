@@ -66,9 +66,9 @@ func TestRenderCardCodewhaleBadgeAndCommand(t *testing.T) {
 	}
 }
 
-// A Cursor card keeps its original command and carries no codewhale
-// badge, so the two sources stay distinguishable.
-func TestRenderCardCursorUnchanged(t *testing.T) {
+// Every card names its agent. Leaving Cursor cards unlabelled made the
+// dashboard look like it only tracked codewhale.
+func TestRenderCardCursorCarriesItsOwnLabel(t *testing.T) {
 	m := renderTestModel(session.Session{
 		ID:         "afd3a58d-8fb9-40ad-b3da-c88da1e575dc",
 		Source:     session.SourceCursor,
@@ -86,5 +86,8 @@ func TestRenderCardCursorUnchanged(t *testing.T) {
 	}
 	if strings.Contains(out, "codewhale") {
 		t.Errorf("cursor card carries a codewhale badge:\n%s", out)
+	}
+	if !strings.Contains(out, "·  cursor") {
+		t.Errorf("cursor card does not name its agent:\n%s", out)
 	}
 }

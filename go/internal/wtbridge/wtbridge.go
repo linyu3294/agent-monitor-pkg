@@ -311,18 +311,32 @@ func (a Agent) LaunchCommand(prompt string, approval Approval) string {
 //	never       cursor-agent --yolo
 //	untrusted   cursor-agent (default)
 //
-// Claude Code takes the posture as a flag too. --permission-mode
-// acceptEdits is its middle ground (file edits run, everything else
-// still prompts) and --dangerously-skip-permissions is the unattended
-// launch. It has no stricter-than-default mode, so untrusted is the
-// default. Claude Code has no sandbox switch at all: every launch has the
-// whole filesystem and the network, so the `net:` row deliberately does
-// not appear in its command line.
+// Claude Code takes the posture as a flag too, and every value below is
+// spelled from the enum the installed CLI prints for --permission-mode
+// (acceptEdits, auto, bypassPermissions, manual, dontAsk, plan; verified
+// against 2.1.329).
 //
-//	on-request  claude (default)
-//	auto        claude --permission-mode acceptEdits
+// The default row must be pinned rather than left implicit. Claude Code
+// 2.1.x starts in `auto` mode, where its own classifier decides whether a
+// tool call is risky — the opposite of "ask before acting". A bare
+// `claude` would therefore make the on-request label a lie. Pinning is
+// safe because the flag sets only the starting mode: inside the session
+// Shift+Tab still cycles manual → accept edits → plan → auto (observed),
+// which is exactly what the dashboard wants the human to be able to do.
+// That is the difference from codewhale, whose --approval-policy becomes
+// the controlling source and freezes its dial.
+//
+// untrusted maps to dontAsk: Claude Code denies anything that is not
+// already pre-approved, which is the strictest posture it offers.
+//
+// Claude Code has no sandbox switch at all: every launch has the whole
+// filesystem and the network, so the `net:` row deliberately does not
+// appear in its command line.
+//
+//	on-request  claude --permission-mode manual
+//	auto        claude --permission-mode auto
 //	never       claude --dangerously-skip-permissions
-//	untrusted   claude (default)
+//	untrusted   claude --permission-mode dontAsk
 //
 // cursor-agent takes --sandbox enabled|disabled. When the posture is off,
 // cursor-agent gets no flag at all — its effective default is whatever its
@@ -337,10 +351,14 @@ func (a Agent) LaunchCommandWith(prompt string, approval Approval, network Netwo
 	case AgentClaude:
 		cmd = "claude"
 		switch approval {
+		case ApprovalOnRequest:
+			cmd += " --permission-mode manual"
 		case ApprovalAuto:
-			cmd += " --permission-mode acceptEdits"
+			cmd += " --permission-mode auto"
 		case ApprovalNever:
 			cmd += " --dangerously-skip-permissions"
+		case ApprovalUntrusted:
+			cmd += " --permission-mode dontAsk"
 		}
 	default:
 		switch approval {
