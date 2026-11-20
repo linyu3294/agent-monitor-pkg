@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/agent-monitor/agent-monitor/internal/proctable"
+	"github.com/agent-monitor/agent-monitor/internal/scanner"
 	"github.com/agent-monitor/agent-monitor/internal/session"
 )
 
@@ -90,4 +93,63 @@ func TestRenderCardCursorCarriesItsOwnLabel(t *testing.T) {
 	if !strings.Contains(out, "·  cursor") {
 		t.Errorf("cursor card does not name its agent:\n%s", out)
 	}
+}
+
+// A worktree whose agent has launched but not spoken yet must show a card
+// naming that agent, and the card must carry its pid so it can be managed.
+func TestEnrichStartingCardsNamesLiveAgent(t *testing.T) {
+	primary, stub := tuiRepoWithWorktree(t, "feat-start")
+	stub.ID = scanner.NoSessionID
+	stub.Source = ""
+	stub.PID = 0
+	stub.State = session.StateIdle
+
+	loc := fakeLocator{dir: filepath.Join(primary, ".worktrees", "feat-start"), proc: proctable.Process{PID: 4242, State: 'R'}}
+
+	sessions := []session.Session{stub}
+	EnrichStartingCards(sessions, loc)
+
+	got := sessions[0]
+	if got.Source != session.SourceClaude {
+		t.Fatalf("Source = %q, want claude", got.Source)
+	}
+	if got.PID != 4242 {
+		t.Fatalf("PID = %d, want 4242", got.PID)
+	}
+	if got.State != session.StateStarting {
+		t.Fatalf("State = %q, want STARTING", got.State)
+	}
+
+	// A stopped process is a paused card, not a starting one.
+	loc.proc.State = 'T'
+	paused := []session.Session{stub}
+	EnrichStartingCards(paused, loc)
+	if paused[0].State != session.StatePaused || !paused[0].Paused {
+		t.Fatalf("stopped agent reads %q paused=%v, want PAUSED", paused[0].State, paused[0].Paused)
+	}
+
+	// A real session owns the worktree card; it keeps its own state.
+	real := stub
+	real.ID = "8b7c6d5e-4f3a-4b2c-9d1e-0a1b2c3d4e5f"
+	real.Source = session.SourceClaude
+	real.PID = 0
+	real.State = session.StateIdle
+	pair := []session.Session{real}
+	EnrichStartingCards(pair, loc)
+	if pair[0].PID != 0 || pair[0].State != session.StateIdle {
+		t.Fatalf("a real session was rewritten: %+v", pair[0])
+	}
+}
+
+// fakeLocator stands in for the process table in tests.
+type fakeLocator struct {
+	dir  string
+	proc proctable.Process
+}
+
+func (f fakeLocator) ClaudeProcessAt(dir string) (proctable.Process, bool) {
+	if filepath.Clean(dir) != filepath.Clean(f.dir) {
+		return proctable.Process{}, false
+	}
+	return f.proc, true
 }

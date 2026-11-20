@@ -162,7 +162,8 @@ type ClaudeSessionRef struct {
 // unbound card merely loses its ACTIVE state, while a wrong binding
 // would signal someone else's agent.
 func (t *Table) BindClaudeSessions(byWorkspace map[string][]ClaudeSessionRef) {
-	if len(byWorkspace) == 0 || len(t.claudeProcs) == 0 {
+	t.claudeFree = nil
+	if len(t.claudeProcs) == 0 {
 		return
 	}
 
@@ -179,6 +180,10 @@ func (t *Table) BindClaudeSessions(byWorkspace map[string][]ClaudeSessionRef) {
 	}
 
 	bound := map[string]bool{}
+	// Processes that never bind a session stay available: an agent that is
+	// running but has not written its first turn still needs a card, so the
+	// dashboard can show it and signal it.
+	free := make([]claudeProc, 0, len(t.claudeProcs))
 	for _, p := range t.claudeProcs {
 		if p.exact {
 			continue
@@ -194,6 +199,7 @@ func (t *Table) BindClaudeSessions(byWorkspace map[string][]ClaudeSessionRef) {
 			}
 		}
 		if ambiguousPid {
+			free = append(free, p)
 			continue
 		}
 
@@ -216,18 +222,48 @@ func (t *Table) BindClaudeSessions(byWorkspace map[string][]ClaudeSessionRef) {
 			}
 		}
 		if len(candidates) != 1 {
+			free = append(free, p)
 			continue
 		}
 		id := candidates[0].ID
 		if id == "" || bound[id] {
+			free = append(free, p)
 			continue
 		}
 		if _, taken := t.byChat[id]; taken {
+			free = append(free, p)
 			continue
 		}
 		t.byChat[id] = Process{PID: p.pid, State: p.state}
 		bound[id] = true
 	}
+	t.claudeFree = free
+}
+
+// ClaudeProcessAt reports a live claude process running in dir that is not
+// bound to any session card, with the directory spellings compared the same
+// way the binding compares them.
+//
+// This is what lets the dashboard show an agent that has launched but has
+// not spoken yet: Claude Code writes its transcript only once the session
+// produces a record, so between launch and the first turn there is nothing
+// in the store to scan. Without this the tab holds a live agent and the
+// dashboard shows nothing at all.
+func (t *Table) ClaudeProcessAt(dir string) (Process, bool) {
+	want := workspaceKeys(dir)
+	if len(want) == 0 {
+		return Process{}, false
+	}
+	for _, p := range t.claudeFree {
+		for _, have := range workspaceKeys(p.cwd) {
+			for _, w := range want {
+				if have == w {
+					return Process{PID: p.pid, State: p.state}, true
+				}
+			}
+		}
+	}
+	return Process{}, false
 }
 
 // claudeIDFromOpenPath extracts the session id from a Claude Code
