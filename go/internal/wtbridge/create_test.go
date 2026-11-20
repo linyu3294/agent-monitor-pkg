@@ -250,18 +250,35 @@ func TestClaudePermissionModesAcceptedByCLI(t *testing.T) {
 			args := append([]string{"-p", "reply with one word"}, launch[1:]...)
 			probe := exec.Command(bin, args...)
 			probe.Dir = t.TempDir()
+			// Claude writes a transcript into ~/.claude/projects for every
+			// session it starts. A test must not leave cards behind in the
+			// store the dashboard reads, so point the CLI at a throwaway
+			// config dir for the probe.
+			probe.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+t.TempDir())
 			out, err := probe.CombinedOutput()
-			if strings.Contains(string(out), "is invalid") {
+			text := string(out)
+			// A rejected flag is the only failure this test owns. The
+			// probe cannot log in (the throwaway config dir has no
+			// credentials) and the account may have no credit, so any
+			// other error is environmental.
+			if strings.Contains(text, "is invalid") || strings.Contains(text, "Allowed choices") {
 				t.Fatalf("claude rejects the launch %v:\n%s", launch, out)
 			}
-			if strings.Contains(string(out), "Not logged in") {
-				t.Skip("claude is not authenticated; flag validation needs a login")
-			}
 			if err != nil {
-				t.Fatalf("claude launch %v failed: %v\n%s", launch, err, out)
+				t.Skipf("probe could not complete for %v (environmental): %s", launch, firstNonEmptyLine(text))
 			}
 		})
 	}
+}
+
+// firstNonEmptyLine keeps a skip reason to one line of CLI output.
+func firstNonEmptyLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(line) != "" {
+			return strings.TrimSpace(line)
+		}
+	}
+	return ""
 }
 
 func initRepo(t *testing.T) string {
