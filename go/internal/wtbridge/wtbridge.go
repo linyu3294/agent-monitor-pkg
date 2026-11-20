@@ -15,6 +15,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -546,6 +548,66 @@ func OpenITerm(cwd, cmd string) error {
 // a working one. The tab stops at the shell prompt with the error on screen.
 func OpenITermWithSetup(cwd, before, cmd string) error {
 	return openITermLine(cwd, before, cmd)
+}
+
+// ttyDeviceRe matches the device paths ps reports for a terminal. The
+// value is interpolated into an AppleScript, so it is validated rather
+// than trusted: anything else could close the quote and run its own code.
+var ttyDeviceRe = regexp.MustCompile(`^/dev/tty[a-zA-Z0-9]+$`)
+
+// TTYForPID returns the terminal device a process is attached to, or ""
+// when it has none (a background agent, or a process that already exited).
+//
+// This is how a card finds its tab: the agent CLI does not record its own
+// terminal, but its process is attached to the pty that iTerm allocated.
+func TTYForPID(pid int) string {
+	if pid <= 0 {
+		return ""
+	}
+	out, err := exec.Command("ps", "-o", "tty=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return ""
+	}
+	tty := strings.TrimSpace(string(out))
+	if tty == "" || tty == "??" || tty == "-" {
+		return ""
+	}
+	if !strings.HasPrefix(tty, "/dev/") {
+		tty = "/dev/" + tty
+	}
+	return tty
+}
+
+// FocusITermTTY selects the iTerm window and tab whose session is attached
+// to device, bringing iTerm to the front. Read-only: it selects, never
+// writes, so focusing a tab cannot disturb the agent running in it.
+func FocusITermTTY(device string) error {
+	if !ttyDeviceRe.MatchString(device) {
+		return fmt.Errorf("not a terminal device: %q", device)
+	}
+	script := fmt.Sprintf(`tell application "iTerm"
+  repeat with w in windows
+    repeat with t in tabs of w
+      repeat with s in sessions of t
+        if tty of s is "%s" then
+          select w
+          select t
+          activate
+          return "focused"
+        end if
+      end repeat
+    end repeat
+  end repeat
+end tell
+return "not-found"`, device)
+	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s", firstLine(strings.TrimSpace(string(out))))
+	}
+	if strings.TrimSpace(string(out)) != "focused" {
+		return fmt.Errorf("no iTerm tab is attached to %s", device)
+	}
+	return nil
 }
 
 func openITermLine(cwd, before, cmd string) error {
